@@ -43,6 +43,10 @@ pub enum Op {
     AddI(R, R, R), SubI(R, R, R), MulI(R, R, R), DivI(R, R, R), ModI(R, R, R),
     /// dst = a + constant
     AddIK(R, R, i32),
+    /// dst = a * constant, a / constant (constant != 0), a % constant (constant != 0)
+    MulIK(R, R, i32), DivIK(R, R, i32), ModIK(R, R, i32),
+    /// dst = a <cmp> constant
+    CmpIK(R, R, i32, Cmp),
     AddF(R, R, R), SubF(R, R, R), MulF(R, R, R), DivF(R, R, R), ModF(R, R, R),
     Concat(R, R, R),
     VecAdd(R, R, R), VecSub(R, R, R), VecMul(R, R, R),
@@ -66,8 +70,13 @@ pub enum Op {
     CmpIJump(R, R, Cmp, u32),
     /// Jump unless `a <cmp> constant`.
     CmpIKJump(R, i32, Cmp, u32),
+    /// Jump unless `a <cmp> b` for floats.
+    CmpFJump(R, R, Cmp, u32),
     /// (iterable, cursor, element dst, exit): load the next element or jump out.
     ForIter(R, R, R, u32),
+    /// `for k in range(...)`: (counter, end, element dst, exit). If counter <
+    /// end, copy it to dst and increment it; otherwise jump out.
+    ForRange(R, R, R, u32),
 
     // ---- calls: arguments live in consecutive registers starting at `base`
     /// (function, base, argc, dst)
@@ -88,6 +97,8 @@ pub enum Op {
     NewInstance(R, u32),
     /// (dst, obj, slot)
     GetField(R, R, u16),
+    /// (dst, obj, slot, component): `obj.field.x` for a vector field.
+    GetFieldComp(R, R, u16, u8),
     /// (obj, slot, src)
     SetField(R, u16, R),
     GetFieldNamed(R, R, u32),
@@ -343,6 +354,8 @@ impl<'a> FnCompiler<'a> {
             Op::CmpIJump(a, b, c, _) => Op::CmpIJump(a, b, c, t),
             Op::CmpIKJump(a, k, c, _) => Op::CmpIKJump(a, k, c, t),
             Op::ForIter(a, b, d, _) => Op::ForIter(a, b, d, t),
+            Op::ForRange(a, b, d, _) => Op::ForRange(a, b, d, t),
+            Op::CmpFJump(a, b, c, _) => Op::CmpFJump(a, b, c, t),
             other => other,
         };
     }
@@ -389,10 +402,10 @@ impl<'a> FnCompiler<'a> {
                 let jf = self.cond_jump(cond);
                 self.block(then_body);
                 if else_body.is_empty() {
-                    self.patch(jf);
+                    self.patch_all(jf);
                 } else {
                     let j = self.emit(Op::Jump(0));
-                    self.patch(jf);
+                    self.patch_all(jf);
                     self.block(else_body);
                     self.patch(j);
                 }
@@ -404,15 +417,36 @@ impl<'a> FnCompiler<'a> {
                 self.block(body);
                 self.span = s.span;
                 self.emit(Op::Jump(top));
-                self.patch(jf);
+                self.patch_all(jf);
                 self.end_loop();
             }
             StmtKind::For { var, iter, index, iterable, body } => {
-                self.expr_to(iterable, *iter);
-                self.emit(Op::LoadInt(*index, 0));
+                // `for k in range(a, b)`: count in registers; no range object.
+                let range = match &iterable.kind {
+                    ExprKind::CallBuiltin { builtin: Builtin::Range1, args } if args.len() == 1 => Some((None, &args[0])),
+                    ExprKind::CallBuiltin { builtin: Builtin::Range2, args } if args.len() == 2 => Some((Some(&args[0]), &args[1])),
+                    _ => None,
+                };
+                match range {
+                    Some((start, end)) => {
+                        match start {
+                            Some(a) => self.expr_to(a, *index),
+                            None => { self.emit(Op::LoadInt(*index, 0)); }
+                        }
+                        self.expr_to(end, *iter);
+                    }
+                    None => {
+                        self.expr_to(iterable, *iter);
+                        self.emit(Op::LoadInt(*index, 0));
+                    }
+                }
                 let elem = if self.captured(*var) { self.alloc() } else { *var };
                 let top = self.here();
-                let fi = self.emit(Op::ForIter(*iter, *index, elem, 0));
+                let fi = if range.is_some() {
+                    self.emit(Op::ForRange(*index, *iter, elem, 0))
+                } else {
+                    self.emit(Op::ForIter(*iter, *index, elem, 0))
+                };
                 if self.captured(*var) {
                     self.emit(Op::NewCell(*var));
                     self.emit(Op::StoreCell(*var, elem));
@@ -446,25 +480,95 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    /// Evaluate a condition; emit a jump taken when it is false.
-    fn cond_jump(&mut self, cond: &ir::Expr) -> usize {
+    fn patch_all(&mut self, jumps: Vec<usize>) { for j in jumps { self.patch(j); } }
+
+    /// Evaluate a condition; returns the jumps taken when it is false.
+    /// Comparisons fuse with their jump, and `and` / `or` / `not` become
+    /// jump chains instead of materialised booleans.
+    fn cond_jump(&mut self, cond: &ir::Expr) -> Vec<usize> {
         let saved = self.span;
         if cond.span != Span::default() { self.span = cond.span; }
-        let j = if let ExprKind::Binary(BinOp::CmpI(c), l, r) = &cond.kind {
-            if let Some(k) = small_int(r) {
-                let a = self.expr_any(l);
-                self.emit(Op::CmpIKJump(a, k, *c, 0))
-            } else {
-                let a = self.expr_any(l);
-                let b = self.expr_any(r);
-                self.emit(Op::CmpIJump(a, b, *c, 0))
-            }
-        } else {
-            let r = self.expr_any(cond);
-            self.emit(Op::JumpIfFalse(r, 0))
-        };
+        let jumps = self.jumps_false(cond);
         self.span = saved;
-        j
+        jumps
+    }
+
+    fn jumps_false(&mut self, cond: &ir::Expr) -> Vec<usize> {
+        self.top_scope(|this| match &cond.kind {
+            ExprKind::Binary(BinOp::CmpI(c), l, r) => {
+                if let Some(k) = small_int(r) {
+                    let a = this.expr_any(l);
+                    vec![this.emit(Op::CmpIKJump(a, k, *c, 0))]
+                } else {
+                    let a = this.expr_any(l);
+                    let b = this.expr_any(r);
+                    vec![this.emit(Op::CmpIJump(a, b, *c, 0))]
+                }
+            }
+            ExprKind::Binary(BinOp::CmpF(c), l, r) => {
+                let a = this.expr_any(l);
+                let b = this.expr_any(r);
+                vec![this.emit(Op::CmpFJump(a, b, *c, 0))]
+            }
+            ExprKind::And(l, r) => {
+                let mut j = this.jumps_false(l);
+                j.extend(this.jumps_false(r));
+                j
+            }
+            ExprKind::Or(l, r) => {
+                let jt = this.jumps_true(l);
+                let jf = this.jumps_false(r);
+                this.patch_all(jt);
+                jf
+            }
+            ExprKind::Unary(UnOp::Not, inner) => this.jumps_true(inner),
+            _ => {
+                let r = this.expr_any(cond);
+                vec![this.emit(Op::JumpIfFalse(r, 0))]
+            }
+        })
+    }
+
+    /// The jumps taken when `cond` is true.
+    fn jumps_true(&mut self, cond: &ir::Expr) -> Vec<usize> {
+        self.top_scope(|this| match &cond.kind {
+            // Integers are totally ordered, so "jump if a < b" is "jump unless a >= b".
+            ExprKind::Binary(BinOp::CmpI(c), l, r) => {
+                let inv = match c { Cmp::Lt => Cmp::Ge, Cmp::Le => Cmp::Gt, Cmp::Gt => Cmp::Le, Cmp::Ge => Cmp::Lt };
+                if let Some(k) = small_int(r) {
+                    let a = this.expr_any(l);
+                    vec![this.emit(Op::CmpIKJump(a, k, inv, 0))]
+                } else {
+                    let a = this.expr_any(l);
+                    let b = this.expr_any(r);
+                    vec![this.emit(Op::CmpIJump(a, b, inv, 0))]
+                }
+            }
+            ExprKind::Or(l, r) => {
+                let mut j = this.jumps_true(l);
+                j.extend(this.jumps_true(r));
+                j
+            }
+            ExprKind::And(l, r) => {
+                let jf = this.jumps_false(l);
+                let jt = this.jumps_true(r);
+                this.patch_all(jf);
+                jt
+            }
+            ExprKind::Unary(UnOp::Not, inner) => this.jumps_false(inner),
+            _ => {
+                let r = this.expr_any(cond);
+                vec![this.emit(Op::JumpIfTrue(r, 0))]
+            }
+        })
+    }
+
+    /// Run `f` and then free the temporaries it allocated.
+    fn top_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let top = self.top;
+        let r = f(self);
+        self.top = top;
+        r
     }
 
     fn assign(&mut self, place: &Place, op: Option<BinOp>, value: &ir::Expr) {
@@ -612,6 +716,26 @@ impl<'a> FnCompiler<'a> {
                         return;
                     }
                 }
+                if let Some(k) = small_int(r) {
+                    let fused = match op {
+                        BinOp::MulI => Some(Op::MulIK(d, 0, k)),
+                        BinOp::DivI if k != 0 && k != -1 => Some(Op::DivIK(d, 0, k)),
+                        BinOp::ModI if k != 0 => Some(Op::ModIK(d, 0, k)),
+                        BinOp::CmpI(c) => Some(Op::CmpIK(d, 0, k, *c)),
+                        _ => None,
+                    };
+                    if let Some(op) = fused {
+                        let a = self.expr_any(l);
+                        self.emit(match op {
+                            Op::MulIK(d, _, k) => Op::MulIK(d, a, k),
+                            Op::DivIK(d, _, k) => Op::DivIK(d, a, k),
+                            Op::ModIK(d, _, k) => Op::ModIK(d, a, k),
+                            Op::CmpIK(d, _, k, c) => Op::CmpIK(d, a, k, c),
+                            other => other,
+                        });
+                        return;
+                    }
+                }
                 let a = self.expr_any(l);
                 let b = self.expr_any(r);
                 self.emit(binop(*op, d, a, b));
@@ -656,7 +780,15 @@ impl<'a> FnCompiler<'a> {
                 let n = self.bc.add_name(name);
                 self.emit(Op::GetFieldNamed(d, o, n));
             }
-            ExprKind::VecComp { vec, index } => { let v = self.expr_any(vec); self.emit(Op::VecGet(d, v, *index)); }
+            ExprKind::VecComp { vec, index } => {
+                if let ExprKind::GetField { obj, slot } = &vec.kind {
+                    let o = self.expr_any(obj);
+                    self.emit(Op::GetFieldComp(d, o, *slot as u16, *index));
+                } else {
+                    let v = self.expr_any(vec);
+                    self.emit(Op::VecGet(d, v, *index));
+                }
+            }
             ExprKind::CallFunc { func, args } => {
                 let argc = self.argc(args.len());
                 let base = self.alloc_n(args.len() as u32);
@@ -677,6 +809,10 @@ impl<'a> FnCompiler<'a> {
                 let base = self.alloc_n(args.len() as u32 + 1);
                 self.args_at(args, base + 1);
                 self.emit(Op::CallValue(c, base, argc, d));
+            }
+            ExprKind::CallBuiltin { builtin: Builtin::IntToFloat, args } if args.len() == 1 => {
+                let a = self.expr_any(&args[0]);
+                self.emit(Op::IToF(d, a));
             }
             ExprKind::CallBuiltin { builtin, args } if is_fast_builtin(*builtin) && args.len() <= 2 => {
                 let a = match args.first() { Some(x) => self.expr_any(x), None => 0 };
@@ -734,7 +870,8 @@ impl<'a> FnCompiler<'a> {
 pub fn is_fast_builtin(b: Builtin) -> bool {
     use Builtin::*;
     matches!(b, Sqrt | Sin | Cos | Tan | Atan2 | Pow | AbsF | MinF | MaxF
-        | VecLength | VecNormalized | VecDot | VecDistance | VecCross)
+        | VecLength | VecNormalized | VecDot | VecDistance | VecCross
+        | MinI | MaxI | ToStr | StrLen)
 }
 
 fn small_int(e: &ir::Expr) -> Option<i32> {

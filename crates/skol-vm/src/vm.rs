@@ -92,7 +92,17 @@ pub struct Vm {
     pub args: Vec<String>,
     exit_request: Option<i32>,
     input: Option<Box<dyn FnMut() -> Option<String>>>,
+    /// Caches for name-based access through component types: index
+    /// `name * classes + class` holds the method id / field slot, or
+    /// `IC_EMPTY`. Built lazily; replaces a string hash lookup per access.
+    ic_methods: Vec<u32>,
+    ic_fields: Vec<u32>,
+    ic_dims: (usize, usize),
 }
+
+const IC_EMPTY: u32 = u32::MAX;
+/// Above this many (class, name) pairs the caches aren't worth their memory.
+const IC_MAX_ENTRIES: usize = 1 << 20;
 
 impl TypeNames for Vm {
     fn class_name(&self, id: u32) -> &str { self.bc.class_name(id) }
@@ -130,6 +140,28 @@ impl rt::Host for Vm {
             None => Err(format!("host function #{id} is not registered")),
         }
     }
+}
+
+/// Decimal text of an integer without going through the formatter.
+struct IntText { buf: [u8; 20], start: usize }
+
+impl IntText {
+    fn as_str(&mut self) -> &str { std::str::from_utf8(&self.buf[self.start..]).unwrap_or("0") }
+}
+
+fn itoa_buf(n: i64) -> IntText {
+    let mut buf = [0u8; 20];
+    let mut i = 20;
+    let neg = n < 0;
+    let mut m = n.unsigned_abs();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (m % 10) as u8;
+        m /= 10;
+        if m == 0 { break; }
+    }
+    if neg { i -= 1; buf[i] = b'-'; }
+    IntText { buf, start: i }
 }
 
 fn int_of(v: &Value) -> Option<i64> { if let Value::Int(i) = v { Some(*i) } else { None } }
@@ -193,6 +225,7 @@ impl Vm {
             out, rng: seed | 1, start: Instant::now(), scratch: Vec::with_capacity(8),
             limits: Limits::default(), steps_left: u64::MAX, nesting: 0, host_fns: Vec::new(), allow_fs: true,
             allow_os: true, args: Vec::new(), exit_request: None, input: None,
+            ic_methods: Vec::new(), ic_fields: Vec::new(), ic_dims: (0, 0),
         };
         vm.sync_globals();
         vm
@@ -291,6 +324,7 @@ impl Vm {
         }
     }
 
+    #[inline(always)]
     fn enter(&mut self, func: u32, base: usize, ret: usize, closure: Option<Rc<Closure>>) -> Result<(), String> {
         if self.frames.len() >= self.limits.max_depth {
             return Err(format!("stack overflow (more than {} nested calls)", self.limits.max_depth));
@@ -376,6 +410,49 @@ impl Vm {
         Ok(())
     }
 
+    /// Method id for `name` on `class`, through the cache.
+    #[inline]
+    fn method_for(&mut self, class: u32, name: u32) -> Option<u32> {
+        let idx = self.ic_index(class, name);
+        if let Some(i) = idx {
+            let v = self.ic_methods[i];
+            if v != IC_EMPTY { return Some(v); }
+        }
+        let n = &self.bc.names[name as usize];
+        let f = *self.bc.classes.get(class as usize)?.methods.get(&**n)?;
+        if let Some(i) = idx { self.ic_methods[i] = f; }
+        Some(f)
+    }
+
+    /// Field slot for `name` on `class`, through the cache.
+    #[inline]
+    fn field_for(&mut self, class: u32, name: u32) -> Option<u32> {
+        let idx = self.ic_index(class, name);
+        if let Some(i) = idx {
+            let v = self.ic_fields[i];
+            if v != IC_EMPTY { return Some(v); }
+        }
+        let n = &self.bc.names[name as usize];
+        let slot = *self.bc.classes.get(class as usize)?.field_index.get(&**n)? as u32;
+        if let Some(i) = idx { self.ic_fields[i] = slot; }
+        Some(slot)
+    }
+
+    #[inline]
+    fn ic_index(&mut self, class: u32, name: u32) -> Option<usize> {
+        let dims = (self.bc.classes.len(), self.bc.names.len());
+        if dims != self.ic_dims {
+            // New classes or names (REPL): start over.
+            let n = dims.0.saturating_mul(dims.1);
+            let n = if n <= IC_MAX_ENTRIES { n } else { 0 };
+            self.ic_methods = vec![IC_EMPTY; n];
+            self.ic_fields = vec![IC_EMPTY; n];
+            self.ic_dims = dims;
+        }
+        let i = name as usize * dims.0 + class as usize;
+        if i < self.ic_methods.len() { Some(i) } else { None }
+    }
+
     /// The dispatch loop. Runs until the frame count drops back to `stop`,
     /// then returns the value the last frame returned.
     fn run(&mut self, stop: usize) -> Result<Value, RuntimeError> {
@@ -401,6 +478,7 @@ impl Vm {
                 closure = fr.closure.clone();
             }};
         }
+        #[allow(unused_macros)]
         macro_rules! nested { ($e:expr) => {{ save!(); match $e { Ok(v) => v, Err(e) => return Err(e) } }}; }
         macro_rules! reg { ($r:expr) => { self.regs[base + $r as usize] }; }
         macro_rules! set { ($r:expr, $v:expr) => {{ let v = $v; put(&mut self.regs[base + $r as usize], v); }}; }
@@ -466,11 +544,6 @@ impl Vm {
                         _ => set!(l, v),
                     }
                 }
-                Op::NewCell(l) => set!(l, Value::Cell(Rc::new(RefCell::new(Value::Void)))),
-                Op::WrapCell(l) => {
-                    let v = std::mem::replace(&mut reg!(l), Value::Void);
-                    set!(l, Value::Cell(Rc::new(RefCell::new(v))));
-                }
                 Op::LoadUpval(d, u) => {
                     let Some(cl) = &closure else { fail!("internal error: no closure") };
                     let v = cl.upvals[u as usize].borrow().clone();
@@ -481,12 +554,6 @@ impl Vm {
                     let Some(cl) = &closure else { fail!("internal error: no closure") };
                     *cl.upvals[u as usize].borrow_mut() = v;
                 }
-                Op::LoadUpvalRaw(d, u) => {
-                    let Some(cl) = &closure else { fail!("internal error: no closure") };
-                    let c = cl.upvals[u as usize].clone();
-                    set!(d, Value::Cell(c));
-                }
-
                 Op::AddI(d, a, b) => int_op!(d, a, b, checked_add, "+"),
                 Op::SubI(d, a, b) => int_op!(d, a, b, checked_sub, "-"),
                 Op::MulI(d, a, b) => int_op!(d, a, b, checked_mul, "*"),
@@ -505,39 +572,66 @@ impl Vm {
                         None => fail!("integer overflow in {}", if k >= 0 { "+" } else { "-" }),
                     }
                 }
+                Op::MulIK(d, a, k) => {
+                    let x = int!(a);
+                    match x.checked_mul(k as i64) { Some(r) => set_int!(d, r), None => fail!("integer overflow in *") }
+                }
+                Op::DivIK(d, a, k) => { let x = int!(a); set_int!(d, x / k as i64); }
+                Op::ModIK(d, a, k) => { let x = int!(a); set_int!(d, x.rem_euclid(k as i64)); }
+                Op::CmpIK(d, a, k, c) => { let x = int!(a); set!(d, Value::Bool(cmp_i(c, x, k as i64))); }
                 Op::AddF(d, a, b) => float_op!(d, a, b, +),
                 Op::SubF(d, a, b) => float_op!(d, a, b, -),
                 Op::MulF(d, a, b) => float_op!(d, a, b, *),
                 Op::DivF(d, a, b) => float_op!(d, a, b, /),
                 Op::ModF(d, a, b) => { let (x, y) = (float!(a), float!(b)); set_float!(d, x.rem_euclid(y)); }
-                Op::Concat(d, a, b) => {
-                    let s = match (&reg!(a), &reg!(b)) {
-                        (Value::Str(x), Value::Str(y)) => {
-                            let mut s = String::with_capacity(x.len() + y.len());
-                            s.push_str(x);
-                            s.push_str(y);
-                            s
-                        }
-                        _ => fail!("internal error: expected strings"),
-                    };
-                    if s.len() > rt::MAX_STRING_BYTES { fail!("string too long ({} bytes)", s.len()) }
-                    set!(d, Value::str(&s));
+                Op::VecAdd(d, a, b) => {
+                    // vec2 fast path: no conversion through VecN.
+                    if let (Value::Vec2(x1, y1), Value::Vec2(x2, y2)) = (&reg!(a), &reg!(b)) {
+                        let v = Value::Vec2(*x1 + *x2, *y1 + *y2);
+                        set!(d, v);
+                    } else {
+                        let (x, y) = (vec_of!(a), vec_of!(b));
+                        let nv = x.map2(y, |p, q| p + q);
+                        reg!(d).set_vec(nv);
+                    }
                 }
-                Op::VecAdd(d, a, b) => { let (x, y) = (vec_of!(a), vec_of!(b)); { let nv = x.map2(y, |p, q| p + q); reg!(d).set_vec(nv); } }
-                Op::VecSub(d, a, b) => { let (x, y) = (vec_of!(a), vec_of!(b)); { let nv = x.map2(y, |p, q| p - q); reg!(d).set_vec(nv); } }
-                Op::VecMul(d, a, b) => { let (x, y) = (vec_of!(a), vec_of!(b)); { let nv = x.map2(y, |p, q| p * q); reg!(d).set_vec(nv); } }
-                Op::VecScale(d, a, b) => { let (x, k) = (vec_of!(a), float!(b)); { let nv = x.map(|p| p * k); reg!(d).set_vec(nv); } }
+                Op::VecSub(d, a, b) => {
+                    // vec2 fast path: no conversion through VecN.
+                    if let (Value::Vec2(x1, y1), Value::Vec2(x2, y2)) = (&reg!(a), &reg!(b)) {
+                        let v = Value::Vec2(*x1 - *x2, *y1 - *y2);
+                        set!(d, v);
+                    } else {
+                        let (x, y) = (vec_of!(a), vec_of!(b));
+                        let nv = x.map2(y, |p, q| p - q);
+                        reg!(d).set_vec(nv);
+                    }
+                }
+                Op::VecMul(d, a, b) => {
+                    // vec2 fast path: no conversion through VecN.
+                    if let (Value::Vec2(x1, y1), Value::Vec2(x2, y2)) = (&reg!(a), &reg!(b)) {
+                        let v = Value::Vec2(*x1 * *x2, *y1 * *y2);
+                        set!(d, v);
+                    } else {
+                        let (x, y) = (vec_of!(a), vec_of!(b));
+                        let nv = x.map2(y, |p, q| p * q);
+                        reg!(d).set_vec(nv);
+                    }
+                }
+                Op::VecScale(d, a, b) => {
+                    let k = float!(b);
+                    if let Value::Vec2(x, y) = &reg!(a) {
+                        let v = Value::Vec2(*x * k, *y * k);
+                        set!(d, v);
+                    } else {
+                        let x = vec_of!(a);
+                        let nv = x.map(|p| p * k);
+                        reg!(d).set_vec(nv);
+                    }
+                }
                 Op::ScaleVec(d, a, b) => { let (k, x) = (float!(a), vec_of!(b)); { let nv = x.map(|p| p * k); reg!(d).set_vec(nv); } }
                 Op::VecDiv(d, a, b) => { let (x, k) = (vec_of!(a), float!(b)); { let nv = x.map(|p| p / k); reg!(d).set_vec(nv); } }
                 Op::CmpI(d, a, b, c) => { let (x, y) = (int!(a), int!(b)); set!(d, Value::Bool(cmp_i(c, x, y))); }
                 Op::CmpF(d, a, b, c) => { let (x, y) = (float!(a), float!(b)); set!(d, Value::Bool(cmp_ord(c, x.partial_cmp(&y)))); }
-                Op::CmpS(d, a, b, c) => {
-                    let r = match (&reg!(a), &reg!(b)) {
-                        (Value::Str(x), Value::Str(y)) => cmp_ord(c, x.partial_cmp(y)),
-                        _ => fail!("internal error: expected strings"),
-                    };
-                    set!(d, Value::Bool(r));
-                }
                 Op::Eq(d, a, b) => { let r = reg!(a).equals(&reg!(b)); set!(d, Value::Bool(r)); }
                 Op::Ne(d, a, b) => { let r = !reg!(a).equals(&reg!(b)); set!(d, Value::Bool(r)); }
                 Op::NegI(d, a) => {
@@ -552,14 +646,14 @@ impl Vm {
                 }
                 Op::IToF(d, a) => { let x = int!(a); set_float!(d, x as f64); }
 
-                Op::MakeVec(d, b, n) => {
-                    let mut v = VecN::new(n);
-                    for i in 0..n as usize {
-                        if let Value::Float(x) = reg!(b as usize + i) { v.c[i] = x; }
-                    }
-                    { let nv = v; reg!(d).set_vec(nv); }
+                Op::VecGet(d, v, i) => {
+                    let x = match &reg!(v) {
+                        Value::Vec2(x, y) => if i == 0 { *x } else { *y },
+                        Value::Vec(w) => w.c[i as usize],
+                        _ => fail!("internal error: expected a vector register"),
+                    };
+                    set_float!(d, x);
                 }
-                Op::VecGet(d, v, i) => { let x = vec_of!(v); set_float!(d, x.c[i as usize]); }
                 Op::VecSet(d, v, i, s) => {
                     let mut x = vec_of!(v);
                     x.c[i as usize] = float!(s);
@@ -579,6 +673,19 @@ impl Vm {
                 Op::JumpIfTrue(r, t) => { if let Value::Bool(true) = reg!(r) { ip = t as usize; } }
                 Op::CmpIJump(a, b, c, t) => { if !cmp_i(c, int!(a), int!(b)) { ip = t as usize; } }
                 Op::CmpIKJump(a, k, c, t) => { if !cmp_i(c, int!(a), k as i64) { ip = t as usize; } }
+                Op::CmpFJump(a, b, c, t) => {
+                    let (x, y) = (float!(a), float!(b));
+                    if !cmp_ord(c, x.partial_cmp(&y)) { ip = t as usize; }
+                }
+                Op::ForRange(idx, end, d, exit) => {
+                    let i = int!(idx);
+                    if i < int!(end) {
+                        set_int!(idx, i + 1);
+                        set_int!(d, i);
+                    } else {
+                        ip = exit as usize;
+                    }
+                }
                 Op::ForIter(it, idx, d, exit) => {
                     let i = int!(idx);
                     let next = match &reg!(it) {
@@ -596,8 +703,13 @@ impl Vm {
 
                 Op::Call(func, b, _argc, d) => {
                     save!();
-                    tri!(self.enter(func, base + b as usize, base + d as usize, None));
-                    reload!();
+                    let nb = base + b as usize;
+                    tri!(self.enter(func, nb, base + d as usize, None));
+                    // We know the new frame: skip reading it back.
+                    code = self.bc.protos[func as usize].code.clone();
+                    ip = 0;
+                    base = nb;
+                    closure = None;
                 }
                 Op::CallValue(c, b, _argc, d) => {
                     let Value::Func(cl) = reg!(c).clone() else { fail!("value is not callable") };
@@ -612,27 +724,13 @@ impl Vm {
                     reload!();
                 }
                 Op::CallMethodNamed(name, b, _argc, d) => {
-                    let inst = instance!(b);
-                    let class = inst.borrow().class;
-                    let n = &self.bc.names[name as usize];
-                    let Some(&func) = self.bc.classes[class as usize].methods.get(&**n) else {
-                        fail!("{} has no method '{}'", self.bc.classes[class as usize].name, n)
+                    let class = match &reg!(b) { Value::Instance(i) => i.borrow().class, _ => fail!("internal error: expected an instance") };
+                    let Some(func) = self.method_for(class, name) else {
+                        fail!("{} has no method '{}'", self.bc.classes[class as usize].name, self.bc.names[name as usize])
                     };
                     save!();
                     tri!(self.enter(func, base + b as usize, base + d as usize, None));
                     reload!();
-                }
-                Op::CallBuiltin(bi, b, argc, d) => {
-                    let mut args = std::mem::take(&mut self.scratch);
-                    args.clear();
-                    let start = base + b as usize;
-                    args.extend(self.regs[start..start + argc as usize].iter().map(fast_clone));
-                    save!();
-                    let r = rt::builtins::call(bi, &args, self);
-                    args.clear();
-                    self.scratch = args;
-                    let v = tri!(r);
-                    set!(d, v);
                 }
                 Op::FastBuiltin(bi, d, a, b) => {
                     use skol_ir::Builtin as B;
@@ -649,7 +747,15 @@ impl Vm {
                         }
                         B::VecLength => { let v = vec_of!(a); set_float!(d, v.length()); }
                         B::VecDot => { let (v, w) = (vec_of!(a), vec_of!(b)); set_float!(d, v.dot(w)); }
-                        B::VecDistance => { let (v, w) = (vec_of!(a), vec_of!(b)); set_float!(d, v.map2(w, |p, q| p - q).length()); }
+                        B::VecDistance => {
+                            let r = if let (Value::Vec2(x1, y1), Value::Vec2(x2, y2)) = (&reg!(a), &reg!(b)) {
+                                ((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).sqrt()
+                            } else {
+                                let (v, w) = (vec_of!(a), vec_of!(b));
+                                v.map2(w, |p, q| p - q).length()
+                            };
+                            set_float!(d, r);
+                        }
                         B::VecNormalized => {
                             let v = vec_of!(a);
                             let len = v.length();
@@ -663,6 +769,22 @@ impl Vm {
                             r.c[1] = p.c[2] * q.c[0] - p.c[0] * q.c[2];
                             r.c[2] = p.c[0] * q.c[1] - p.c[1] * q.c[0];
                             reg!(d).set_vec(r);
+                        }
+                        B::MinI | B::MaxI => {
+                            let (x, y) = (int!(a), int!(b));
+                            set_int!(d, if bi == B::MinI { x.min(y) } else { x.max(y) });
+                        }
+                        B::StrLen => {
+                            let n = match &reg!(a) { Value::Str(s) => if s.is_ascii() { s.len() } else { s.chars().count() }, _ => fail!("internal error: expected a string") };
+                            set_int!(d, n as i64);
+                        }
+                        B::ToStr => {
+                            let v = match &reg!(a) {
+                                Value::Int(n) => { let mut buf = itoa_buf(*n); Value::str(buf.as_str()) }
+                                Value::Str(s) => Value::Str(s.clone()),
+                                other => { let o = other.clone(); Value::str(&rt::format::to_display(&o, &*self)) }
+                            };
+                            set!(d, v);
                         }
                         _ => fail!("internal error: {:?} is not a fast built-in", bi),
                     }
@@ -681,16 +803,60 @@ impl Vm {
                     reload!();
                 }
 
-                Op::NewInstance(d, c) => {
-                    let n = self.bc.classes[c as usize].field_names.len();
-                    set!(d, Value::Instance(Rc::new(RefCell::new(Instance { class: c, fields: vec![Value::Void; n] }))));
-                }
                 Op::GetField(d, o, slot) => {
                     let v = match &reg!(o) {
                         Value::Instance(i) => match i.borrow().fields.get(slot as usize) { Some(v) => fast_clone(v), None => fail!("internal error: bad field") },
                         _ => fail!("internal error: field read on a non-instance"),
                     };
                     set!(d, v);
+                }
+                Op::Concat(d, a, b) => {
+                    let v = match (&reg!(a), &reg!(b)) {
+                        (Value::Str(x), Value::Str(y)) => {
+                            let n = x.len() + y.len();
+                            if n <= 128 {
+                                // Short strings: join on the stack, then one allocation.
+                                let mut buf = [0u8; 128];
+                                buf[..x.len()].copy_from_slice(x.as_bytes());
+                                buf[x.len()..n].copy_from_slice(y.as_bytes());
+                                match std::str::from_utf8(&buf[..n]) { Ok(t) => Value::str(t), Err(_) => fail!("internal error: bad string") }
+                            } else {
+                                if n > rt::MAX_STRING_BYTES { fail!("string too long ({} bytes)", n) }
+                                let mut t = String::with_capacity(n);
+                                t.push_str(x);
+                                t.push_str(y);
+                                Value::Str(t.into())
+                            }
+                        }
+                        _ => fail!("internal error: expected strings"),
+                    };
+                    set!(d, v);
+                }
+                Op::GetFieldNamed(d, o, name) => {
+                    let inst = instance!(o);
+                    let class = inst.borrow().class;
+                    let Some(slot) = self.field_for(class, name) else { fail!("missing field '{}'", self.bc.names[name as usize]) };
+                    let v = match inst.borrow().fields.get(slot as usize) { Some(v) => fast_clone(v), None => fail!("internal error: bad field") };
+                    set!(d, v);
+                }
+                Op::SetFieldNamed(o, name, s) => {
+                    let v = fast_clone(&reg!(s));
+                    let inst = instance!(o);
+                    let class = inst.borrow().class;
+                    let Some(slot) = self.field_for(class, name) else { fail!("missing field '{}'", self.bc.names[name as usize]) };
+                    let ok = match inst.borrow_mut().fields.get_mut(slot as usize) { Some(f) => { put(f, v); true } None => false };
+                    if !ok { fail!("internal error: bad field") }
+                }
+                Op::GetFieldComp(d, o, slot, c) => {
+                    let x = match &reg!(o) {
+                        Value::Instance(i) => match i.borrow().fields.get(slot as usize) {
+                            Some(Value::Vec2(x, y)) => if c == 0 { *x } else { *y },
+                            Some(Value::Vec(v)) => v.c[c as usize],
+                            _ => fail!("internal error: bad vector field"),
+                        },
+                        _ => fail!("internal error: field read on a non-instance"),
+                    };
+                    set_float!(d, x);
                 }
                 Op::SetField(o, slot, s) => {
                     let v = fast_clone(&reg!(s));
@@ -702,190 +868,278 @@ impl Vm {
                         _ => fail!("internal error: field write on a non-instance"),
                     }
                 }
-                Op::GetFieldNamed(d, o, name) => {
-                    let inst = instance!(o);
-                    let class = inst.borrow().class;
-                    let n = &self.bc.names[name as usize];
-                    let Some(&slot) = self.bc.classes[class as usize].field_index.get(&**n) else { fail!("missing field '{}'", n) };
-                    let v = fast_clone(&inst.borrow().fields[slot as usize]);
-                    set!(d, v);
-                }
-                Op::SetFieldNamed(o, name, s) => {
-                    let v = fast_clone(&reg!(s));
-                    let inst = instance!(o);
-                    let class = inst.borrow().class;
-                    let n = &self.bc.names[name as usize];
-                    let Some(&slot) = self.bc.classes[class as usize].field_index.get(&**n) else { fail!("missing field '{}'", n) };
-                    put(&mut inst.borrow_mut().fields[slot as usize], v);
-                }
-                Op::Closure(d, func, b, n) => {
-                    let mut upvals = Vec::with_capacity(n as usize);
-                    for i in 0..n as usize {
-                        match &reg!(b as usize + i) {
-                            Value::Cell(c) => upvals.push(c.clone()),
-                            other => upvals.push(Rc::new(RefCell::new(other.clone()))),
-                        }
-                    }
-                    set!(d, Value::Func(Rc::new(Closure { func, upvals, bound: None })));
-                }
-                Op::BindMethod(d, r, func) => {
-                    let recv = reg!(r).clone();
-                    set!(d, Value::Func(Rc::new(Closure { func, upvals: vec![], bound: Some(recv) })));
-                }
-                Op::BindMethodNamed(d, r, name) => {
-                    let inst = instance!(r);
-                    let class = inst.borrow().class;
-                    let n = &self.bc.names[name as usize];
-                    let Some(&func) = self.bc.classes[class as usize].methods.get(&**n) else { fail!("missing method '{}'", n) };
-                    set!(d, Value::Func(Rc::new(Closure { func, upvals: vec![], bound: Some(Value::Instance(inst)) })));
-                }
-
-                Op::MakeList(d, t, b, n) => {
-                    let Type::List { cap, elem } = &self.bc.types[t as usize] else { fail!("internal error: bad list type") };
-                    let start = base + b as usize;
-                    let items: Vec<Value> = self.regs[start..start + n as usize].to_vec();
-                    let table = Table::new_list(*cap, (**elem).clone(), items);
-                    set!(d, Value::Table(Rc::new(RefCell::new(table))));
-                }
-                Op::MakeMap(d, t, b, n) => {
-                    let Type::Map { cap, key, val } = &self.bc.types[t as usize] else { fail!("internal error: bad map type") };
-                    let mut table = Table::new_map(*cap, (**key).clone(), (**val).clone());
-                    for i in 0..n as usize {
-                        let k = &self.regs[base + b as usize + 2 * i];
-                        let v = self.regs[base + b as usize + 2 * i + 1].clone();
-                        let key = tri!(rt::Key::from_value(k));
-                        tri!(table.map_insert(key, v));
-                    }
-                    set!(d, Value::Table(Rc::new(RefCell::new(table))));
-                }
-                Op::Zero(d, t) => {
-                    let ty = self.bc.types[t as usize].clone();
-                    let v = nested!(self.zero_value(&ty));
-                    set!(d, v);
-                }
-                Op::Table(top, d, t, a, b) => {
-                    let Value::Table(tb) = reg!(t).clone() else { fail!("internal error: table op on a non-table") };
-                    let result = match top {
-                        TableOp::Len => Value::Int(tb.borrow().len() as i64),
-                        TableOp::Sum => tb.borrow().sum(),
-                        TableOp::Even => Value::Table(Rc::new(RefCell::new(tb.borrow().even()))),
-                        TableOp::Cut => {
-                            let ty = tb.borrow().val_ty.clone();
-                            let zero = nested!(self.zero_value(&ty));
-                            let k = reg!(a).clone();
-                            tri!(tb.borrow_mut().cut(&k, zero));
-                            Value::Void
-                        }
-                        TableOp::Get => tri!(tb.borrow().get(&reg!(a))),
-                        TableOp::Set => {
-                            let (k, v) = (reg!(a).clone(), reg!(b).clone());
-                            tri!(tb.borrow_mut().set(&k, v));
-                            Value::Void
-                        }
-                        TableOp::Has => Value::Bool(tb.borrow().has(&reg!(a))),
-                        TableOp::Push => { let v = reg!(a).clone(); tri!(tb.borrow_mut().push(v)); Value::Void }
-                        TableOp::Pop => tri!(tb.borrow_mut().pop()),
-                        TableOp::Clear => { tb.borrow_mut().clear(); Value::Void }
-                        TableOp::IsEmpty => Value::Bool(tb.borrow().is_empty()),
-                        TableOp::Keys => Value::Table(Rc::new(RefCell::new(tb.borrow().keys()))),
-                        TableOp::Vals => Value::Table(Rc::new(RefCell::new(tb.borrow().vals()))),
-                        TableOp::Count => Value::Int(tb.borrow().count(&reg!(a))),
-                        TableOp::Find => Value::Int(tb.borrow().find(&reg!(a))),
-                        TableOp::Contains => Value::Bool(tb.borrow().contains(&reg!(a))),
-                        TableOp::Min => tri!(tb.borrow().extreme(false)),
-                        TableOp::Max => tri!(tb.borrow().extreme(true)),
-                        TableOp::First => tri!(tb.borrow().first()),
-                        TableOp::Last => tri!(tb.borrow().last()),
-                        TableOp::GetOr => { let d = reg!(b).clone(); tb.borrow().get_or(&reg!(a), d) }
-                        TableOp::Insert => {
-                            let (k, v) = (reg!(a).clone(), reg!(b).clone());
-                            tri!(tb.borrow_mut().insert(&k, v));
-                            Value::Void
-                        }
-                        TableOp::Remove => { let k = reg!(a).clone(); tri!(tb.borrow_mut().remove(&k)) }
-                        TableOp::SwapRemove => { let k = reg!(a).clone(); tri!(tb.borrow_mut().swap_remove(&k)) }
-                        TableOp::PopFront => tri!(tb.borrow_mut().pop_front()),
-                        TableOp::Extend => {
-                            let Value::Table(other) = reg!(a).clone() else { fail!("internal error: extend with a non-table") };
-                            // `t.edit(extend, t)` appends a copy of itself.
-                            let src = other.borrow().copy();
-                            tri!(tb.borrow_mut().extend(&src));
-                            Value::Void
-                        }
-                        TableOp::Sort => { tb.borrow_mut().sort(); Value::Void }
-                        TableOp::Reverse => { tb.borrow_mut().reverse(); Value::Void }
-                        TableOp::Shuffle => {
-                            let mut t = tb.borrow_mut();
-                            if let rt::TableData::List(v) = &mut t.data {
-                                for i in (1..v.len()).rev() {
-                                    let j = rt::builtins::random_index(&mut self.rng, i + 1);
-                                    v.swap(i, j);
-                                }
-                            }
-                            Value::Void
-                        }
-                        TableOp::Pick => {
-                            let t = tb.borrow();
-                            let vals = t.values();
-                            if vals.is_empty() { fail!("can't pick from an empty table") }
-                            vals[rt::builtins::random_index(&mut self.rng, vals.len())].clone()
-                        }
-                        TableOp::Copy => Value::Table(Rc::new(RefCell::new(tb.borrow().copy()))),
-                        TableOp::Slice => {
-                            let (x, y) = (reg!(a).clone(), reg!(b).clone());
-                            Value::Table(Rc::new(RefCell::new(tri!(tb.borrow().slice(&x, &y)))))
-                        }
-                        TableOp::Join => {
-                            let sep = match &reg!(a) { Value::Str(s) => s.clone(), _ => fail!("internal error: join separator") };
-                            let items: Vec<Value> = tb.borrow().values().to_vec();
-                            let mut out = String::new();
-                            for (i, v) in items.iter().enumerate() {
-                                if i > 0 { out.push_str(&sep); }
-                                out.push_str(&rt::format::to_display(v, &*self));
-                                if out.len() > rt::MAX_STRING_BYTES { fail!("join would build a string that is too long") }
-                            }
-                            Value::str(&out)
-                        }
-                        TableOp::SortBy | TableOp::Filter => {
-                            let f = reg!(a).clone();
-                            // Work on a snapshot: the callback may read or even change the table.
-                            let items: Vec<Value> = tb.borrow().values().to_vec();
-                            let mut results = Vec::with_capacity(items.len());
-                            for v in &items {
-                                let r = nested!(self.call_value(&f, vec![v.clone()]));
-                                results.push(r);
-                            }
-                            if top == TableOp::Filter {
-                                let kept: Vec<Value> = items.into_iter().zip(results)
-                                    .filter(|(_, keep)| matches!(keep, Value::Bool(true))).map(|(v, _)| v).collect();
-                                let t = tb.borrow();
-                                Value::Table(Rc::new(RefCell::new(Table::new_list(t.cap, t.val_ty.clone(), kept))))
-                            } else {
-                                let mut order: Vec<usize> = (0..items.len()).collect();
-                                order.sort_by(|&x, &y| rt::table::cmp_values(&results[x], &results[y]).unwrap_or(std::cmp::Ordering::Equal));
-                                let sorted: Vec<Value> = order.into_iter().map(|i| items[i].clone()).collect();
-                                tri!(tb.borrow_mut().replace_list(sorted));
-                                Value::Void
+                // Hot table operations: no reference-count traffic on the table.
+                Op::Table(TableOp::Get, d, t, a, _) => {
+                    let v = match &reg!(t) {
+                        Value::Table(tb) => {
+                            let tb = tb.borrow();
+                            match (&tb.data, &reg!(a)) {
+                                (rt::TableData::List(items), Value::Int(i)) if *i >= 0 && (*i as usize) < items.len() => fast_clone(&items[*i as usize]),
+                                _ => tri!(tb.get(&reg!(a))),
                             }
                         }
+                        _ => fail!("internal error: table op on a non-table"),
                     };
-                    set!(d, result);
+                    set!(d, v);
                 }
-
-                Op::NewSignal(d, id) => set!(d, Value::Signal(Rc::new(SignalObj { id, listeners: RefCell::new(vec![]) }))),
-                Op::Listen(s, h) => {
-                    let handler = reg!(h).clone();
-                    let Value::Signal(sig) = &reg!(s) else { fail!("internal error: listen on a non-signal") };
-                    sig.listeners.borrow_mut().push(handler);
+                Op::Table(TableOp::Set, _, t, a, b) => {
+                    let v = fast_clone(&reg!(b));
+                    let r = match &reg!(t) {
+                        Value::Table(tb) => {
+                            let mut tb = tb.borrow_mut();
+                            match (&mut tb.data, &reg!(a)) {
+                                (rt::TableData::List(items), Value::Int(i)) if *i >= 0 && (*i as usize) < items.len() => { put(&mut items[*i as usize], v); Ok(()) }
+                                _ => tb.set(&reg!(a), v),
+                            }
+                        }
+                        _ => fail!("internal error: table op on a non-table"),
+                    };
+                    tri!(r);
                 }
-                Op::Emit(s, b, argc) => {
-                    let Value::Signal(sig) = reg!(s).clone() else { fail!("internal error: emit on a non-signal") };
-                    let start = base + b as usize;
-                    let args = self.regs[start..start + argc as usize].to_vec();
-                    nested!(self.emit_signal(&sig, args));
+                Op::Table(TableOp::Len, d, t, _, _) => {
+                    let n = match &reg!(t) { Value::Table(tb) => tb.borrow().len(), _ => fail!("internal error: table op on a non-table") };
+                    set_int!(d, n as i64);
+                }
+                Op::Table(TableOp::Has, d, t, a, _) => {
+                    let h = match &reg!(t) { Value::Table(tb) => tb.borrow().has(&reg!(a)), _ => fail!("internal error: table op on a non-table") };
+                    set!(d, Value::Bool(h));
+                }
+                other => {
+                    save!();
+                    self.run_slow(other, base, closure.as_ref())?;
                 }
             }
         }
+    }
+
+
+    /// Instructions that are rare in hot loops. Keeping them out of `run`
+    /// keeps the dispatch loop small, which leaves the compiler more
+    /// registers for the common path. The caller has saved the instruction
+    /// pointer, so errors here get the right location.
+    #[inline(never)]
+    fn run_slow(&mut self, op: Op, base: usize, closure: Option<&Rc<Closure>>) -> Result<(), RuntimeError> {
+        macro_rules! fail { ($($t:tt)*) => {{ return Err(self.error(format!($($t)*))); }}; }
+        macro_rules! tri { ($e:expr) => { match $e { Ok(v) => v, Err(m) => fail!("{}", m) } }; }
+        macro_rules! nested { ($e:expr) => {{ match $e { Ok(v) => v, Err(e) => return Err(e) } }}; }
+        // The caller already saved the instruction pointer.
+        macro_rules! save { () => {}; }
+        macro_rules! reg { ($r:expr) => { self.regs[base + $r as usize] }; }
+        macro_rules! set { ($r:expr, $v:expr) => {{ let v = $v; put(&mut self.regs[base + $r as usize], v); }}; }
+        macro_rules! instance {
+            ($r:expr) => { match &reg!($r) { Value::Instance(i) => i.clone(), _ => fail!("internal error: expected an instance") } };
+        }
+        match op {
+            Op::NewCell(l) => set!(l, Value::Cell(Rc::new(RefCell::new(Value::Void)))),
+            Op::WrapCell(l) => {
+                let v = std::mem::replace(&mut reg!(l), Value::Void);
+                set!(l, Value::Cell(Rc::new(RefCell::new(v))));
+            }
+            Op::LoadUpvalRaw(d, u) => {
+                let Some(cl) = &closure else { fail!("internal error: no closure") };
+                let c = cl.upvals[u as usize].clone();
+                set!(d, Value::Cell(c));
+            }
+
+            Op::CmpS(d, a, b, c) => {
+                let r = match (&reg!(a), &reg!(b)) {
+                    (Value::Str(x), Value::Str(y)) => cmp_ord(c, x.partial_cmp(y)),
+                    _ => fail!("internal error: expected strings"),
+                };
+                set!(d, Value::Bool(r));
+            }
+            Op::MakeVec(d, b, n) => {
+                let mut v = VecN::new(n);
+                for i in 0..n as usize {
+                    if let Value::Float(x) = reg!(b as usize + i) { v.c[i] = x; }
+                }
+                { let nv = v; reg!(d).set_vec(nv); }
+            }
+            Op::CallBuiltin(bi, b, argc, d) => {
+                let mut args = std::mem::take(&mut self.scratch);
+                args.clear();
+                let start = base + b as usize;
+                args.extend(self.regs[start..start + argc as usize].iter().map(fast_clone));
+                save!();
+                let r = rt::builtins::call(bi, &args, self);
+                args.clear();
+                self.scratch = args;
+                let v = tri!(r);
+                set!(d, v);
+            }
+            Op::NewInstance(d, c) => {
+                let n = self.bc.classes[c as usize].field_names.len();
+                set!(d, Value::Instance(Rc::new(RefCell::new(Instance { class: c, fields: vec![Value::Void; n] }))));
+            }
+            Op::Closure(d, func, b, n) => {
+                let mut upvals = Vec::with_capacity(n as usize);
+                for i in 0..n as usize {
+                    match &reg!(b as usize + i) {
+                        Value::Cell(c) => upvals.push(c.clone()),
+                        other => upvals.push(Rc::new(RefCell::new(other.clone()))),
+                    }
+                }
+                set!(d, Value::Func(Rc::new(Closure { func, upvals, bound: None })));
+            }
+            Op::BindMethod(d, r, func) => {
+                let recv = reg!(r).clone();
+                set!(d, Value::Func(Rc::new(Closure { func, upvals: vec![], bound: Some(recv) })));
+            }
+            Op::BindMethodNamed(d, r, name) => {
+                let inst = instance!(r);
+                let class = inst.borrow().class;
+                let n = &self.bc.names[name as usize];
+                let Some(&func) = self.bc.classes[class as usize].methods.get(&**n) else { fail!("missing method '{}'", n) };
+                set!(d, Value::Func(Rc::new(Closure { func, upvals: vec![], bound: Some(Value::Instance(inst)) })));
+            }
+
+            Op::MakeList(d, t, b, n) => {
+                let Type::List { cap, elem } = &self.bc.types[t as usize] else { fail!("internal error: bad list type") };
+                let start = base + b as usize;
+                let items: Vec<Value> = self.regs[start..start + n as usize].to_vec();
+                let table = Table::new_list(*cap, (**elem).clone(), items);
+                set!(d, Value::Table(Rc::new(RefCell::new(table))));
+            }
+            Op::MakeMap(d, t, b, n) => {
+                let Type::Map { cap, key, val } = &self.bc.types[t as usize] else { fail!("internal error: bad map type") };
+                let mut table = Table::new_map(*cap, (**key).clone(), (**val).clone());
+                for i in 0..n as usize {
+                    let k = &self.regs[base + b as usize + 2 * i];
+                    let v = self.regs[base + b as usize + 2 * i + 1].clone();
+                    let key = tri!(rt::Key::from_value(k));
+                    tri!(table.map_insert(key, v));
+                }
+                set!(d, Value::Table(Rc::new(RefCell::new(table))));
+            }
+            Op::Zero(d, t) => {
+                let ty = self.bc.types[t as usize].clone();
+                let v = nested!(self.zero_value(&ty));
+                set!(d, v);
+            }
+            Op::Table(top, d, t, a, b) => {
+                let Value::Table(tb) = reg!(t).clone() else { fail!("internal error: table op on a non-table") };
+                let result = match top {
+                    TableOp::Len => Value::Int(tb.borrow().len() as i64),
+                    TableOp::Sum => tb.borrow().sum(),
+                    TableOp::Even => Value::Table(Rc::new(RefCell::new(tb.borrow().even()))),
+                    TableOp::Cut => {
+                        let ty = tb.borrow().val_ty.clone();
+                        let zero = nested!(self.zero_value(&ty));
+                        let k = reg!(a).clone();
+                        tri!(tb.borrow_mut().cut(&k, zero));
+                        Value::Void
+                    }
+                    TableOp::Get => tri!(tb.borrow().get(&reg!(a))),
+                    TableOp::Set => {
+                        let (k, v) = (reg!(a).clone(), reg!(b).clone());
+                        tri!(tb.borrow_mut().set(&k, v));
+                        Value::Void
+                    }
+                    TableOp::Has => Value::Bool(tb.borrow().has(&reg!(a))),
+                    TableOp::Push => { let v = reg!(a).clone(); tri!(tb.borrow_mut().push(v)); Value::Void }
+                    TableOp::Pop => tri!(tb.borrow_mut().pop()),
+                    TableOp::Clear => { tb.borrow_mut().clear(); Value::Void }
+                    TableOp::IsEmpty => Value::Bool(tb.borrow().is_empty()),
+                    TableOp::Keys => Value::Table(Rc::new(RefCell::new(tb.borrow().keys()))),
+                    TableOp::Vals => Value::Table(Rc::new(RefCell::new(tb.borrow().vals()))),
+                    TableOp::Count => Value::Int(tb.borrow().count(&reg!(a))),
+                    TableOp::Find => Value::Int(tb.borrow().find(&reg!(a))),
+                    TableOp::Contains => Value::Bool(tb.borrow().contains(&reg!(a))),
+                    TableOp::Min => tri!(tb.borrow().extreme(false)),
+                    TableOp::Max => tri!(tb.borrow().extreme(true)),
+                    TableOp::First => tri!(tb.borrow().first()),
+                    TableOp::Last => tri!(tb.borrow().last()),
+                    TableOp::GetOr => { let d = reg!(b).clone(); tb.borrow().get_or(&reg!(a), d) }
+                    TableOp::Insert => {
+                        let (k, v) = (reg!(a).clone(), reg!(b).clone());
+                        tri!(tb.borrow_mut().insert(&k, v));
+                        Value::Void
+                    }
+                    TableOp::Remove => { let k = reg!(a).clone(); tri!(tb.borrow_mut().remove(&k)) }
+                    TableOp::SwapRemove => { let k = reg!(a).clone(); tri!(tb.borrow_mut().swap_remove(&k)) }
+                    TableOp::PopFront => tri!(tb.borrow_mut().pop_front()),
+                    TableOp::Extend => {
+                        let Value::Table(other) = reg!(a).clone() else { fail!("internal error: extend with a non-table") };
+                        // `t.edit(extend, t)` appends a copy of itself.
+                        let src = other.borrow().copy();
+                        tri!(tb.borrow_mut().extend(&src));
+                        Value::Void
+                    }
+                    TableOp::Sort => { tb.borrow_mut().sort(); Value::Void }
+                    TableOp::Reverse => { tb.borrow_mut().reverse(); Value::Void }
+                    TableOp::Shuffle => {
+                        let mut t = tb.borrow_mut();
+                        if let rt::TableData::List(v) = &mut t.data {
+                            for i in (1..v.len()).rev() {
+                                let j = rt::builtins::random_index(&mut self.rng, i + 1);
+                                v.swap(i, j);
+                            }
+                        }
+                        Value::Void
+                    }
+                    TableOp::Pick => {
+                        let t = tb.borrow();
+                        let vals = t.values();
+                        if vals.is_empty() { fail!("can't pick from an empty table") }
+                        vals[rt::builtins::random_index(&mut self.rng, vals.len())].clone()
+                    }
+                    TableOp::Copy => Value::Table(Rc::new(RefCell::new(tb.borrow().copy()))),
+                    TableOp::Slice => {
+                        let (x, y) = (reg!(a).clone(), reg!(b).clone());
+                        Value::Table(Rc::new(RefCell::new(tri!(tb.borrow().slice(&x, &y)))))
+                    }
+                    TableOp::Join => {
+                        let sep = match &reg!(a) { Value::Str(s) => s.clone(), _ => fail!("internal error: join separator") };
+                        let items: Vec<Value> = tb.borrow().values().to_vec();
+                        let mut out = String::new();
+                        for (i, v) in items.iter().enumerate() {
+                            if i > 0 { out.push_str(&sep); }
+                            out.push_str(&rt::format::to_display(v, &*self));
+                            if out.len() > rt::MAX_STRING_BYTES { fail!("join would build a string that is too long") }
+                        }
+                        Value::str(&out)
+                    }
+                    TableOp::SortBy | TableOp::Filter => {
+                        let f = reg!(a).clone();
+                        // Work on a snapshot: the callback may read or even change the table.
+                        let items: Vec<Value> = tb.borrow().values().to_vec();
+                        let mut results = Vec::with_capacity(items.len());
+                        for v in &items {
+                            let r = nested!(self.call_value(&f, vec![v.clone()]));
+                            results.push(r);
+                        }
+                        if top == TableOp::Filter {
+                            let kept: Vec<Value> = items.into_iter().zip(results)
+                                .filter(|(_, keep)| matches!(keep, Value::Bool(true))).map(|(v, _)| v).collect();
+                            let t = tb.borrow();
+                            Value::Table(Rc::new(RefCell::new(Table::new_list(t.cap, t.val_ty.clone(), kept))))
+                        } else {
+                            let mut order: Vec<usize> = (0..items.len()).collect();
+                            order.sort_by(|&x, &y| rt::table::cmp_values(&results[x], &results[y]).unwrap_or(std::cmp::Ordering::Equal));
+                            let sorted: Vec<Value> = order.into_iter().map(|i| items[i].clone()).collect();
+                            tri!(tb.borrow_mut().replace_list(sorted));
+                            Value::Void
+                        }
+                    }
+                };
+                set!(d, result);
+            }
+
+            Op::NewSignal(d, id) => set!(d, Value::Signal(Rc::new(SignalObj { id, listeners: RefCell::new(vec![]) }))),
+            Op::Listen(s, h) => {
+                let handler = reg!(h).clone();
+                let Value::Signal(sig) = &reg!(s) else { fail!("internal error: listen on a non-signal") };
+                sig.listeners.borrow_mut().push(handler);
+            }
+            Op::Emit(s, b, argc) => {
+                let Value::Signal(sig) = reg!(s).clone() else { fail!("internal error: emit on a non-signal") };
+                let start = base + b as usize;
+                let args = self.regs[start..start + argc as usize].to_vec();
+                nested!(self.emit_signal(&sig, args));
+            }
+            _ => fail!("internal error: {:?} is not a slow instruction", op),
+        }
+        Ok(())
     }
 
 }

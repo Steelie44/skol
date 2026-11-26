@@ -71,8 +71,9 @@ fn main() {
 - **Doesn't crash.** Written in 100% safe Rust (`#![forbid(unsafe_code)]`).
   Script errors, limit hits and API misuse come back as errors, never as a
   crash, and a fuzzer checks this.
-- **Fast enough.** A register-based bytecode VM runs 1M method-heavy entity
-  updates in about 0.2 s.
+- **Fast.** A register-based bytecode VM runs 1M method-heavy entity updates
+  in about 0.14 s. On the benchmarks in [`bench/`](bench) it is faster
+  than Python, Ruby and V8 with its JIT turned off.
 
 ## Quick start
 

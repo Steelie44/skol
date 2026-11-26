@@ -3,14 +3,59 @@
 //! `.iter`, `.pos`, `.edit` and `.view`.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
 use skol_ir::Type;
 
 use crate::value::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key { Int(i64), Str(Rc<str>), Bool(bool) }
+
+impl std::hash::Hash for Key {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        match self {
+            Key::Int(i) => h.write_u64(*i as u64),
+            Key::Str(s) => h.write(s.as_bytes()),
+            Key::Bool(b) => h.write_u64(*b as u64 | 0x9e37_79b9_0000_0000),
+        }
+    }
+}
+
+/// A fast non-cryptographic hasher (FxHash) for table keys. Tables have a
+/// fixed, small capacity, so a deliberately colliding key set can only cost
+/// O(capacity) per lookup: SipHash's flooding protection isn't needed.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher { hash: u64 }
+
+const FX_K: u64 = 0x517c_c1b7_2722_0a95;
+
+impl FxHasher {
+    #[inline(always)]
+    fn add(&mut self, w: u64) { self.hash = (self.hash.rotate_left(5) ^ w).wrapping_mul(FX_K); }
+}
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks { self.add(u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])); }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut buf = [0u8; 8];
+            buf[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(buf));
+        }
+        self.add(bytes.len() as u64);
+    }
+    #[inline]
+    fn write_u64(&mut self, n: u64) { self.add(n); }
+    #[inline]
+    fn finish(&self) -> u64 { self.hash }
+}
+
+pub type KeyIndex = HashMap<Key, usize, BuildHasherDefault<FxHasher>>;
 
 impl Key {
     pub fn from_value(v: &Value) -> Result<Key, String> {
@@ -33,7 +78,7 @@ impl Key {
 pub enum TableData {
     List(Vec<Value>),
     /// Insertion-ordered map.
-    Map { keys: Vec<Key>, vals: Vec<Value>, index: HashMap<Key, usize> },
+    Map { keys: Vec<Key>, vals: Vec<Value>, index: KeyIndex },
 }
 
 #[derive(Debug)]
@@ -73,7 +118,7 @@ impl Table {
     }
 
     pub fn new_map(cap: usize, key: Type, val: Type) -> Table {
-        Table { cap, key_ty: Some(key), val_ty: val, data: TableData::Map { keys: vec![], vals: vec![], index: HashMap::new() } }
+        Table { cap, key_ty: Some(key), val_ty: val, data: TableData::Map { keys: vec![], vals: vec![], index: KeyIndex::default() } }
     }
 
     pub fn ty(&self) -> Type {
