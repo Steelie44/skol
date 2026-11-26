@@ -138,3 +138,61 @@ fn api_misuse_is_reported_not_panicked() {
     assert!(engine.load_source("again.skl", "var y: i = 2").is_err());
     assert!(engine.register("game", "late", || -> i64 { 0 }).is_err());
 }
+
+#[test]
+fn os_features_are_sandboxed_by_default() {
+    for (src, what) in [
+        ("from os use env\nvar x: s = env(\"PATH\")\n", "env is disabled"),
+        ("from os use exit\nexit(1)\n", "exit is disabled"),
+        ("from time use sleep\nsleep(0.0)\n", "sleep is disabled"),
+        ("from io use list_dir\nvar t: T8[s] = list_dir(\".\")\n", "file access is disabled"),
+    ] {
+        let mut engine = Engine::new();
+        match engine.load_source("main.skl", src) {
+            Err(Error::Runtime(e)) => assert!(e.message.contains(what), "{src}: {}", e.message),
+            other => panic!("{src}: expected a runtime error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn allow_os_enables_exit_and_args() {
+    let mut engine = Engine::new();
+    engine.allow_os(true).set_args(vec!["level2".into(), "hard".into()]);
+    let out = captured(&mut engine);
+    engine.load_source("main.skl", r#"
+        from os use arg_count, arg, exit
+        fn run() -> i {
+            print(arg_count(), arg(0), arg(1))
+            exit(7)
+            return 0
+        }
+    "#).unwrap();
+    match engine.call::<i64, _>("run", ()) {
+        Err(Error::Exit(7)) => {}
+        other => panic!("expected Exit(7), got {other:?}"),
+    }
+    assert_eq!(out.borrow().as_str(), "2 level2 hard\n");
+}
+
+#[test]
+fn library_paths_are_searched_after_the_script_folder() {
+    let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lib");
+    let mut engine = Engine::new();
+    let out = captured(&mut engine);
+    engine.add_library_path(&lib);
+    engine.load_source("main.skl", r#"
+        from fsm use StateMachine
+        var m: StateMachine = StateMachine()
+        m.add_state("idle")
+        m.on_enter("idle", lambda() -> void { print("entered") })
+        m.start("idle")
+    "#).unwrap();
+    assert_eq!(out.borrow().as_str(), "entered\n");
+
+    let mut plain = Engine::new();
+    match plain.load_source("main.skl", "from fsm use StateMachine\n") {
+        Err(Error::Compile(d)) => assert!(d.message.contains("can't find module 'fsm'"), "{}", d.message),
+        other => panic!("expected a compile error, got {other:?}"),
+    }
+}

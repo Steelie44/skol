@@ -1,0 +1,3 @@
+This folder is Skol's standard library. The skol executable looks for it
+next to itself (or up to two folders above), so `from timers use Timer`
+works from any project. Each NAME.skl here is importable as `from NAME use ...`.

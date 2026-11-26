@@ -17,7 +17,7 @@
   ],
   "repository": {
     "tableops": {
-      "match": "(\\.)(iter|pos|edit|view)\\s*(\\()\\s*(len|sum|even|cut|get|set|has|push|pop|clear|is_empty|keys|vals)\\b",
+      "match": "(\\.)(iter|pos|edit|view)\\s*(\\()\\s*(len|sum|even|cut|count|find|contains|min|max|get|set|has|first|last|get_or|push|pop|clear|insert|remove|swap_remove|pop_front|extend|sort_by|sort|reverse|shuffle|is_empty|keys|vals|copy|slice|join|filter|pick)\\b",
       "captures": {
         "2": { "name": "support.function.table.skl" },
         "4": { "name": "support.constant.table-op.skl" }

@@ -1,0 +1,25 @@
+from testing use test, expect, expect_eq_i, test_summary
+from log use Logger, LOG_DEBUG, LOG_WARN
+
+fn main() -> i {
+    test("level filtering and line format", lambda() -> void {
+        var lines: T16[s] = {}
+        var log: Logger = Logger("unit")
+        log.to_console = false
+        log.on_line = lambda(line: s) -> void { lines.edit(push, line) }
+        log.debug("hidden")
+        log.info("shown")
+        log.level = LOG_WARN
+        log.info("hidden too")
+        log.warn("careful")
+        log.error("bad")
+        expect_eq_i(lines.iter(len), 3, "three lines kept")
+        expect(lines.pos(get, 0).ends_with("INFO  unit: shown"), "info format")
+        expect(lines.pos(get, 1).contains("WARN  unit: careful"), "warn format")
+        expect(lines.pos(get, 2).starts_with("["), "timestamp first")
+        log.level = LOG_DEBUG
+        log.debug("now visible")
+        expect_eq_i(lines.iter(len), 4, "debug after lowering level")
+    })
+    return test_summary()
+}

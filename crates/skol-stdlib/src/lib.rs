@@ -26,6 +26,13 @@ pub trait Host: skol_ir::TypeNames {
     fn elapsed_secs(&self) -> f64;
     /// Whether scripts may touch the file system (the `io` module).
     fn fs_allowed(&self) -> bool { true }
+    /// Whether scripts may use the `os` module's environment and exit, and
+    /// `time.sleep` (they can stall or end the host).
+    fn os_allowed(&self) -> bool { true }
+    /// Command-line arguments passed to the script (not including its path).
+    fn script_args(&self) -> &[String] { &[] }
+    /// The script called `exit(code)`; the VM stops and reports it.
+    fn request_exit(&mut self, code: i32) { let _ = code; }
     /// Read one line of input without its line ending; `None` at end of input.
     fn read_line(&mut self) -> Result<Option<String>, String> {
         use std::io::{BufRead, Write};

@@ -24,7 +24,7 @@ impl Key {
     pub fn to_value(&self) -> Value {
         match self { Key::Int(i) => Value::Int(*i), Key::Str(s) => Value::Str(s.clone()), Key::Bool(b) => Value::Bool(*b) }
     }
-    fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         match self { Key::Int(i) => i.to_string(), Key::Str(s) => format!("{s:?}"), Key::Bool(b) => b.to_string() }
     }
 }
@@ -223,11 +223,210 @@ impl Table {
         Table::new_list(self.cap, self.val_ty.clone(), vals)
     }
 
+    // ---- helpers shared by the extra operations
+
+    /// The stored values (list elements or map values), in order.
+    pub fn values(&self) -> &[Value] {
+        match &self.data { TableData::List(v) => v, TableData::Map { vals, .. } => vals }
+    }
+
+    fn list_mut(&mut self) -> Result<&mut Vec<Value>, String> {
+        match &mut self.data { TableData::List(v) => Ok(v), TableData::Map { .. } => Err("this only works on list tables".into()) }
+    }
+
+    fn rebuild_index(&mut self) {
+        if let TableData::Map { keys, index, .. } = &mut self.data {
+            index.clear();
+            for (i, k) in keys.iter().enumerate() { index.insert(k.clone(), i); }
+        }
+    }
+
+    /// A new, independent table with the same type and contents (shallow).
+    pub fn copy(&self) -> Table {
+        let data = match &self.data {
+            TableData::List(v) => TableData::List(v.clone()),
+            TableData::Map { keys, vals, index } => TableData::Map { keys: keys.clone(), vals: vals.clone(), index: index.clone() },
+        };
+        Table { cap: self.cap, key_ty: self.key_ty.clone(), val_ty: self.val_ty.clone(), data }
+    }
+
+    // ---- extra .iter(...)
+
+    pub fn count(&self, v: &Value) -> i64 { self.values().iter().filter(|x| x.equals(v)).count() as i64 }
+
+    pub fn find(&self, v: &Value) -> i64 { self.values().iter().position(|x| x.equals(v)).map(|i| i as i64).unwrap_or(-1) }
+
+    pub fn contains(&self, v: &Value) -> bool { self.values().iter().any(|x| x.equals(v)) }
+
+    /// Smallest (or largest) value; errors on an empty table.
+    pub fn extreme(&self, largest: bool) -> Result<Value, String> {
+        let vals = self.values();
+        let mut best = vals.first().ok_or_else(|| format!("can't take the {} of an empty table", if largest { "max" } else { "min" }))?;
+        for v in &vals[1..] {
+            let better = match cmp_values(v, best) {
+                Some(std::cmp::Ordering::Greater) => largest,
+                Some(std::cmp::Ordering::Less) => !largest,
+                _ => false,
+            };
+            if better { best = v; }
+        }
+        Ok(best.clone())
+    }
+
+    // ---- extra .pos(...)
+
+    pub fn first(&self) -> Result<Value, String> {
+        self.values().first().cloned().ok_or_else(|| "the table is empty".to_string())
+    }
+
+    pub fn last(&self) -> Result<Value, String> {
+        self.values().last().cloned().ok_or_else(|| "the table is empty".to_string())
+    }
+
+    pub fn get_or(&self, k: &Value, default: Value) -> Value {
+        match &self.data {
+            TableData::List(v) => match k { Value::Int(i) if *i >= 0 && (*i as usize) < v.len() => v[*i as usize].clone(), _ => default },
+            TableData::Map { vals, index, .. } => match Key::from_value(k).ok().and_then(|key| index.get(&key).copied()) {
+                Some(i) => vals[i].clone(),
+                None => default,
+            },
+        }
+    }
+
+    // ---- extra .edit(...)
+
+    /// Insert before position `i` (0..=len), shifting later elements up.
+    pub fn insert(&mut self, i: &Value, value: Value) -> Result<(), String> {
+        let cap = self.cap;
+        let v = self.list_mut()?;
+        let Value::Int(i) = *i else { return Err("list index must be an i".into()) };
+        if i < 0 || i as usize > v.len() {
+            return Err(format!("insert position {i} is out of range for a table of length {}", v.len()));
+        }
+        if v.len() >= cap { return Err(format!("table is full (capacity {cap})")); }
+        v.insert(i as usize, value);
+        Ok(())
+    }
+
+    /// Remove an element (shifting later ones down) or a map entry; returns the value.
+    pub fn remove(&mut self, k: &Value) -> Result<Value, String> {
+        match &mut self.data {
+            TableData::List(v) => {
+                let len = v.len();
+                match k {
+                    Value::Int(i) if *i >= 0 && (*i as usize) < len => Ok(v.remove(*i as usize)),
+                    Value::Int(i) => Err(format!("index {i} is out of range for a table of length {len}")),
+                    _ => Err("list index must be an i".into()),
+                }
+            }
+            TableData::Map { keys, vals, index } => {
+                let key = Key::from_value(k)?;
+                let Some(i) = index.remove(&key) else { return Err(format!("key {} not found", key.describe())) };
+                keys.remove(i);
+                let v = vals.remove(i);
+                // Entries after the removed one moved down by one.
+                for j in i..keys.len() { index.insert(keys[j].clone(), j); }
+                Ok(v)
+            }
+        }
+    }
+
+    /// Remove element `i` by moving the last element into its place (O(1),
+    /// changes order).
+    pub fn swap_remove(&mut self, i: &Value) -> Result<Value, String> {
+        let v = self.list_mut()?;
+        let len = v.len();
+        match i {
+            Value::Int(i) if *i >= 0 && (*i as usize) < len => Ok(v.swap_remove(*i as usize)),
+            Value::Int(i) => Err(format!("index {i} is out of range for a table of length {len}")),
+            _ => Err("list index must be an i".into()),
+        }
+    }
+
+    pub fn pop_front(&mut self) -> Result<Value, String> {
+        let v = self.list_mut()?;
+        if v.is_empty() { return Err("can't pop from an empty table".into()); }
+        Ok(v.remove(0))
+    }
+
+    /// Append another table's elements (list) or merge its entries (map).
+    pub fn extend(&mut self, other: &Table) -> Result<(), String> {
+        match &other.data {
+            TableData::List(items) => {
+                let cap = self.cap;
+                let v = self.list_mut()?;
+                if v.len() + items.len() > cap {
+                    return Err(format!("extend would hold {} elements but the table holds at most {cap}", v.len() + items.len()));
+                }
+                v.extend(items.iter().cloned());
+                Ok(())
+            }
+            TableData::Map { keys, vals, .. } => {
+                for (k, v) in keys.iter().zip(vals.iter()) { self.map_insert(k.clone(), v.clone())?; }
+                Ok(())
+            }
+        }
+    }
+
+    /// Sort a list ascending (stable), or a map's entries by key.
+    pub fn sort(&mut self) {
+        match &mut self.data {
+            TableData::List(v) => v.sort_by(|a, b| cmp_values(a, b).unwrap_or(std::cmp::Ordering::Equal)),
+            TableData::Map { keys, vals, .. } => {
+                let mut pairs: Vec<(Key, Value)> = keys.drain(..).zip(vals.drain(..)).collect();
+                pairs.sort_by(|a, b| cmp_values(&a.0.to_value(), &b.0.to_value()).unwrap_or(std::cmp::Ordering::Equal));
+                for (k, v) in pairs { keys.push(k); vals.push(v); }
+            }
+        }
+        self.rebuild_index();
+    }
+
+    pub fn reverse(&mut self) {
+        match &mut self.data {
+            TableData::List(v) => v.reverse(),
+            TableData::Map { keys, vals, .. } => { keys.reverse(); vals.reverse(); }
+        }
+        self.rebuild_index();
+    }
+
+    /// Replace the list's elements (same table, so other references see it).
+    pub fn replace_list(&mut self, items: Vec<Value>) -> Result<(), String> {
+        let v = self.list_mut()?;
+        *v = items;
+        Ok(())
+    }
+
+    // ---- extra .view(...)
+
+    /// Elements `start..end` as a new table of the same type.
+    pub fn slice(&self, start: &Value, end: &Value) -> Result<Table, String> {
+        let (Value::Int(a), Value::Int(b)) = (start, end) else { return Err("slice bounds must be i".into()) };
+        let (a, b) = (*a, *b);
+        let len = self.len() as i64;
+        if a < 0 || b < a || b > len {
+            return Err(format!("slice({a}, {b}) is out of range for a table of length {len}"));
+        }
+        Ok(Table::new_list(self.cap, self.val_ty.clone(), self.values()[a as usize..b as usize].to_vec()))
+    }
+
     /// Element at position `i` when iterating with `for` (map: the key).
     pub fn iter_at(&self, i: usize) -> Option<Value> {
         match &self.data {
             TableData::List(v) => v.get(i).cloned(),
             TableData::Map { keys, .. } => keys.get(i).map(Key::to_value),
         }
+    }
+}
+
+/// Ordering for sortable values (i, f, s, bool); `None` for anything else.
+pub fn cmp_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Some(x.cmp(y)),
+        (Value::Float(x), Value::Float(y)) => Some(x.total_cmp(y)),
+        (Value::Int(x), Value::Float(y)) => Some((*x as f64).total_cmp(y)),
+        (Value::Float(x), Value::Int(y)) => Some(x.total_cmp(&(*y as f64))),
+        (Value::Str(x), Value::Str(y)) => Some(x.cmp(y)),
+        (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
+        _ => None,
     }
 }

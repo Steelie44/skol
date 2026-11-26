@@ -1,0 +1,83 @@
+# testing: a small unit-test framework.
+#
+#   from testing use test, expect, expect_eq_i, expect_eq_s, expect_near, test_summary
+#
+#   fn main() -> i {
+#       test("addition", lambda() -> void {
+#           expect_eq_i(1 + 1, 2, "one plus one")
+#       })
+#       return test_summary()          # exit code 0 if everything passed
+#   }
+#
+# A failed expect_* is recorded and the test keeps going. A runtime error
+# (index out of range, a failed assert) still stops the whole program.
+
+var tests_run: i = 0
+var tests_failed: i = 0
+var checks_failed: i = 0
+var current_test: s = ""
+var quiet: bool = false
+
+# Run one named test.
+fn test(name: s, body: fn()) -> void {
+    current_test = name
+    tests_run += 1
+    var before: i = checks_failed
+    body()
+    if checks_failed == before {
+        if not quiet { print("  ok    " + name) }
+    } else {
+        tests_failed += 1
+        print("  FAIL  " + name)
+    }
+    current_test = ""
+}
+
+# Only print failures (and the summary).
+fn test_quiet(on: bool) -> void { quiet = on }
+
+fn fail(msg: s) -> void {
+    checks_failed += 1
+    var where: s = current_test
+    if where == "" { where = "(outside a test)" }
+    print("        " + where + ": " + msg)
+}
+
+fn expect(cond: bool, msg: s) -> void {
+    if not cond { fail(msg) }
+}
+
+fn expect_eq_i(actual: i, expected: i, msg: s) -> void {
+    if actual != expected { fail(fmt("{}: expected {}, got {}", msg, expected, actual)) }
+}
+
+fn expect_eq_s(actual: s, expected: s, msg: s) -> void {
+    if actual != expected { fail(fmt("{}: expected \"{}\", got \"{}\"", msg, expected, actual)) }
+}
+
+fn expect_eq_b(actual: bool, expected: bool, msg: s) -> void {
+    if actual != expected { fail(fmt("{}: expected {}, got {}", msg, expected, actual)) }
+}
+
+# Floats: equal within `tolerance`.
+fn expect_near(actual: f, expected: f, tolerance: f, msg: s) -> void {
+    var diff: f = actual - expected
+    if diff < 0.0 { diff = -diff }
+    if not (diff <= tolerance) { fail(fmt("{}: expected {} (within {}), got {}", msg, expected, tolerance, actual)) }
+}
+
+# Print the totals; returns 0 if every test passed, 1 otherwise.
+fn test_summary() -> i {
+    var passed: i = tests_run - tests_failed
+    if tests_failed == 0 {
+        print(fmt("{} test{} passed", passed, plural(passed)))
+        return 0
+    }
+    print(fmt("{} of {} test{} failed", tests_failed, tests_run, plural(tests_run)))
+    return 1
+}
+
+fn plural(n: i) -> s {
+    if n == 1 { return "" }
+    return "s"
+}

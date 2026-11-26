@@ -311,47 +311,52 @@ pub enum BinOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TableOp {
     // .iter(...)
-    Len, Sum, Even, Cut,
+    Len, Sum, Even, Cut, Count, Find, Contains, Min, Max,
     // .pos(...)
-    Get, Set, Has,
+    Get, Set, Has, First, Last, GetOr,
     // .edit(...)
-    Push, Pop, Clear,
+    Push, Pop, Clear, Insert, Remove, SwapRemove, PopFront, Extend, Sort, SortBy, Reverse, Shuffle,
     // .view(...)
-    IsEmpty, Keys, Vals,
+    IsEmpty, Keys, Vals, Copy, Slice, Join, Filter, Pick,
 }
 
 impl TableOp {
+    pub const ALL: &'static [TableOp] = &[
+        TableOp::Len, TableOp::Sum, TableOp::Even, TableOp::Cut, TableOp::Count, TableOp::Find,
+        TableOp::Contains, TableOp::Min, TableOp::Max,
+        TableOp::Get, TableOp::Set, TableOp::Has, TableOp::First, TableOp::Last, TableOp::GetOr,
+        TableOp::Push, TableOp::Pop, TableOp::Clear, TableOp::Insert, TableOp::Remove, TableOp::SwapRemove,
+        TableOp::PopFront, TableOp::Extend, TableOp::Sort, TableOp::SortBy, TableOp::Reverse, TableOp::Shuffle,
+        TableOp::IsEmpty, TableOp::Keys, TableOp::Vals, TableOp::Copy, TableOp::Slice, TableOp::Join,
+        TableOp::Filter, TableOp::Pick,
+    ];
     pub fn dispatcher(self) -> &'static str {
+        use TableOp::*;
         match self {
-            TableOp::Len | TableOp::Sum | TableOp::Even | TableOp::Cut => "iter",
-            TableOp::Get | TableOp::Set | TableOp::Has => "pos",
-            TableOp::Push | TableOp::Pop | TableOp::Clear => "edit",
-            TableOp::IsEmpty | TableOp::Keys | TableOp::Vals => "view",
+            Len | Sum | Even | Cut | Count | Find | Contains | Min | Max => "iter",
+            Get | Set | Has | First | Last | GetOr => "pos",
+            Push | Pop | Clear | Insert | Remove | SwapRemove | PopFront | Extend | Sort | SortBy | Reverse | Shuffle => "edit",
+            IsEmpty | Keys | Vals | Copy | Slice | Join | Filter | Pick => "view",
         }
     }
     pub fn name(self) -> &'static str {
+        use TableOp::*;
         match self {
-            TableOp::Len => "len", TableOp::Sum => "sum", TableOp::Even => "even", TableOp::Cut => "cut",
-            TableOp::Get => "get", TableOp::Set => "set", TableOp::Has => "has",
-            TableOp::Push => "push", TableOp::Pop => "pop", TableOp::Clear => "clear",
-            TableOp::IsEmpty => "is_empty", TableOp::Keys => "keys", TableOp::Vals => "vals",
+            Len => "len", Sum => "sum", Even => "even", Cut => "cut", Count => "count", Find => "find",
+            Contains => "contains", Min => "min", Max => "max",
+            Get => "get", Set => "set", Has => "has", First => "first", Last => "last", GetOr => "get_or",
+            Push => "push", Pop => "pop", Clear => "clear", Insert => "insert", Remove => "remove",
+            SwapRemove => "swap_remove", PopFront => "pop_front", Extend => "extend", Sort => "sort",
+            SortBy => "sort_by", Reverse => "reverse", Shuffle => "shuffle",
+            IsEmpty => "is_empty", Keys => "keys", Vals => "vals", Copy => "copy", Slice => "slice",
+            Join => "join", Filter => "filter", Pick => "pick",
         }
     }
     pub fn lookup(dispatcher: &str, op: &str) -> Option<TableOp> {
-        let all = [
-            TableOp::Len, TableOp::Sum, TableOp::Even, TableOp::Cut, TableOp::Get, TableOp::Set, TableOp::Has,
-            TableOp::Push, TableOp::Pop, TableOp::Clear, TableOp::IsEmpty, TableOp::Keys, TableOp::Vals,
-        ];
-        all.into_iter().find(|t| t.dispatcher() == dispatcher && t.name() == op)
+        Self::ALL.iter().copied().find(|t| t.dispatcher() == dispatcher && t.name() == op)
     }
-    pub fn ops_for(dispatcher: &str) -> &'static [&'static str] {
-        match dispatcher {
-            "iter" => &["len", "sum", "even", "cut"],
-            "pos" => &["get", "set", "has"],
-            "edit" => &["push", "pop", "clear"],
-            "view" => &["is_empty", "keys", "vals"],
-            _ => &[],
-        }
+    pub fn ops_for(dispatcher: &str) -> Vec<&'static str> {
+        Self::ALL.iter().filter(|t| t.dispatcher() == dispatcher).map(|t| t.name()).collect()
     }
 }
 
@@ -364,14 +369,33 @@ pub enum Builtin {
     FloatToInt, StrToInt, IntToFloat, StrToFloat,
     Range1, Range2,
     Input, InputPrompt,
+    /// `fmt(template, args...)`: `{}` placeholders, `{.N}` fixed decimals.
+    Fmt,
+    /// `chr(code)`: the one-character string for a Unicode code point.
+    Chr,
     // io module
     ReadFile, WriteFile, AppendFile, FileExists,
+    /// `read_lines(path)`; the checker appends the destination capacity.
+    ReadLines,
+    /// `list_dir(path)`; the checker appends the destination capacity.
+    ListDir,
+    DeleteFile, DeleteDir, MakeDir, DirExists, RenameFile,
     // math module
-    Sqrt, Sin, Cos, Tan, Atan2, Pow, AbsF, AbsI, Floor, Ceil, Round,
-    MinF, MaxF, MinI, MaxI, ClampF, ClampI, Lerp, Mod, Random, RandomInt, Time,
+    Sqrt, Sin, Cos, Tan, Asin, Acos, Atan, Atan2, Pow, Exp, Log, Log10,
+    AbsF, AbsI, SignF, SignI, Floor, Ceil, Round,
+    MinF, MaxF, MinI, MaxI, ClampF, ClampI, Lerp, InverseLerp, Remap, Smoothstep, MoveToward,
+    WrapI, WrapF, Snapped, DegToRad, RadToDeg, Mod, Random, RandomInt, Time,
+    // random module
+    Seed, RandF, RandI, RandIRange, RandFRange, Chance, RandDir,
+    // time module
+    TicksMsec, TicksUsec, Now, Sleep, Date0, Date1, DateString0, DateString1,
+    // os module
+    ArgCount, Arg, Env, HasEnv, Platform, Exit,
     // string methods (receiver is args[0])
     StrLen, StrUpper, StrLower, StrContains, StrStartsWith, StrEndsWith, StrTrim,
     StrReplace, StrFind, StrSubstr, StrRepeat,
+    StrTrimStart, StrTrimEnd, StrPadLeft, StrPadRight, StrReverse, StrCount, StrRfind,
+    StrIsInt, StrIsFloat, StrIsAlpha, StrIsDigit, StrIsSpace, StrCode,
     /// `s[i]`: the character at index i.
     StrAt,
     /// `s.split(sep)`; the checker appends the destination capacity as a third argument.

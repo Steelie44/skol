@@ -1,0 +1,40 @@
+from testing use test, expect, expect_eq_s, expect_near, test_summary
+from fsm use StateMachine
+
+var trail: s = ""
+
+fn main() -> i {
+    test("enter, update, exit order", lambda() -> void {
+        var m: StateMachine = StateMachine()
+        m.add_state("idle")
+        m.add_state("run")
+        m.on_enter("idle", lambda() -> void { trail += "+idle " })
+        m.on_exit("idle", lambda() -> void { trail += "-idle " })
+        m.on_enter("run", lambda() -> void { trail += "+run " })
+        m.on_update("idle", lambda(dt: f) -> void { if dt > 0.5 { m.change("run") } })
+        m.on_change = lambda(a: s, b: s) -> void { trail += a + ">" + b + " " }
+        m.start("idle")
+        m.update(0.1)
+        expect(m.is_in("idle"), "still idle")
+        expect_near(m.time_in_state, 0.1, 0.0001, "time counted")
+        m.update(1.0)
+        expect_eq_s(m.current, "run", "changed")
+        expect_eq_s(m.previous, "idle", "remembers previous")
+        expect_eq_s(trail, "+idle -idle idle>run +run ", "handler order")
+        expect_near(m.time_in_state, 0.0, 0.0001, "timer reset")
+        m.back()
+        expect_eq_s(m.current, "idle", "back")
+    })
+    test("changing to the same state does nothing", lambda() -> void {
+        var m: StateMachine = StateMachine()
+        var enters: i = 0
+        m.add_state("a")
+        m.on_enter("a", lambda() -> void { enters += 1 })
+        m.start("a")
+        m.change("a")
+        expect(enters == 1, "no re-enter")
+        m.restart()
+        expect(enters == 2, "restart re-enters")
+    })
+    return test_summary()
+}

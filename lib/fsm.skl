@@ -1,0 +1,107 @@
+# fsm: a finite state machine with enter / update / exit handlers.
+#
+#   from fsm use StateMachine
+#
+#   var ai: StateMachine = StateMachine()
+#   ai.add_state("idle")
+#   ai.add_state("chase")
+#   ai.on_update("idle", lambda(dt: f) -> void { if sees_player() { ai.change("chase") } })
+#   ai.on_enter("chase", lambda() -> void { print("!") })
+#   ai.start("idle")
+#   ...each frame: ai.update(dt)
+#
+# Up to 32 states per machine.
+
+class StateMachine {
+    current: s = ""
+    previous: s = ""
+    time_in_state: f = 0.0
+    enters: T32[s, fn()] = {}
+    exits: T32[s, fn()] = {}
+    updates: T32[s, fn(f)] = {}
+    # Called after every change with (from, to).
+    on_change: fn(s, s) = lambda(from_state: s, to_state: s) -> void { pass }
+
+    # Register a state with handlers that do nothing.
+    fn add_state(name: s) -> void {
+        if self.enters.pos(has, name) { return }
+        self.enters.pos(set, name, lambda() -> void { pass })
+        self.exits.pos(set, name, lambda() -> void { pass })
+        self.updates.pos(set, name, lambda(dt: f) -> void { pass })
+    }
+
+    fn has_state(name: s) -> bool { return self.enters.pos(has, name) }
+
+    fn on_enter(name: s, handler: fn()) -> void {
+        self.require(name)
+        self.enters.pos(set, name, handler)
+    }
+
+    fn on_exit(name: s, handler: fn()) -> void {
+        self.require(name)
+        self.exits.pos(set, name, handler)
+    }
+
+    fn on_update(name: s, handler: fn(f)) -> void {
+        self.require(name)
+        self.updates.pos(set, name, handler)
+    }
+
+    # Enter the first state (runs its enter handler).
+    fn start(name: s) -> void {
+        self.require(name)
+        self.current = name
+        self.previous = ""
+        self.time_in_state = 0.0
+        var enter: fn() = self.enters.pos(get, name)
+        enter()
+    }
+
+    # Leave the current state and enter `name`. Changing to the state you are
+    # already in does nothing; use restart() to re-run its enter handler.
+    fn change(name: s) -> void {
+        self.require(name)
+        if name == self.current { return }
+        self.switch_to(name)
+    }
+
+    fn restart() -> void {
+        if self.current == "" { error("StateMachine: start() hasn't been called") }
+        self.switch_to(self.current)
+    }
+
+    # Go back to the previous state.
+    fn back() -> void {
+        if self.previous == "" { return }
+        self.change(self.previous)
+    }
+
+    fn is_in(name: s) -> bool { return self.current == name }
+
+    fn update(dt: f) -> void {
+        if self.current == "" { return }
+        self.time_in_state += dt
+        var upd: fn(f) = self.updates.pos(get, self.current)
+        upd(dt)
+    }
+
+    fn switch_to(name: s) -> void {
+        var leaving: s = self.current
+        if leaving != "" {
+            var exit_fn: fn() = self.exits.pos(get, leaving)
+            exit_fn()
+        }
+        self.previous = leaving
+        self.current = name
+        self.time_in_state = 0.0
+        self.on_change(leaving, name)
+        var enter: fn() = self.enters.pos(get, name)
+        enter()
+    }
+
+    fn require(name: s) -> void {
+        if not self.enters.pos(has, name) {
+            error("StateMachine: unknown state \"" + name + "\" (add it with add_state first)")
+        }
+    }
+}

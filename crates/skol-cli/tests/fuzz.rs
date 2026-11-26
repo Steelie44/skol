@@ -31,6 +31,7 @@ fn exercise(src: &str) {
     let _ = bc.disassemble();
     let mut vm = Vm::with_output(bc, Box::new(|_| {}));
     vm.allow_fs = false;
+    vm.allow_os = false;
     vm.set_input(Box::new(|| None));
     vm.seed(7);
     vm.limits.max_steps = Some(20_000);
@@ -61,7 +62,7 @@ const EDGE_NUMBERS: &[&str] = &["0", "-1", "1", "9223372036854775807", "-9223372
 fn corpus() -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = Vec::new();
-    for dir in [root.join("tests/programs"), root.join("../../examples"), root.join("../../examples/game")] {
+    for dir in [root.join("tests/programs"), root.join("../../examples"), root.join("../../examples/game"), root.join("../../lib"), root.join("../../lib/tests")] {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         let mut paths: Vec<_> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
         paths.sort();

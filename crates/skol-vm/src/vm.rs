@@ -20,7 +20,12 @@ use crate::bytecode::{Bytecode, Op};
 pub struct TraceEntry { pub function: String, pub file: String, pub line: usize, pub col: usize }
 
 #[derive(Debug, Clone)]
-pub struct RuntimeError { pub message: String, pub trace: Vec<TraceEntry> }
+pub struct RuntimeError {
+    pub message: String,
+    pub trace: Vec<TraceEntry>,
+    /// Set when the script called `exit(code)`: not a failure, a request to stop.
+    pub exit_code: Option<i32>,
+}
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -81,6 +86,11 @@ pub struct Vm {
     host_fns: Vec<HostFn>,
     /// Allow the `io` module (file access). On for the CLI, off when embedded.
     pub allow_fs: bool,
+    /// Allow `os.env`, `os.exit` and `time.sleep`. On for the CLI, off when embedded.
+    pub allow_os: bool,
+    /// Arguments the script sees through `os.arg_count()` / `os.arg(i)`.
+    pub args: Vec<String>,
+    exit_request: Option<i32>,
     input: Option<Box<dyn FnMut() -> Option<String>>>,
 }
 
@@ -97,6 +107,9 @@ impl rt::Host for Vm {
     fn rng_state(&mut self) -> &mut u64 { &mut self.rng }
     fn elapsed_secs(&self) -> f64 { self.start.elapsed().as_secs_f64() }
     fn fs_allowed(&self) -> bool { self.allow_fs }
+    fn os_allowed(&self) -> bool { self.allow_os }
+    fn script_args(&self) -> &[String] { &self.args }
+    fn request_exit(&mut self, code: i32) { self.exit_request = Some(code); }
     fn read_line(&mut self) -> Result<Option<String>, String> {
         match &mut self.input {
             Some(f) => Ok(f()),
@@ -178,7 +191,8 @@ impl Vm {
         let mut vm = Vm {
             bc, globals: Vec::new(), regs: Vec::with_capacity(4096), frames: Vec::with_capacity(64),
             out, rng: seed | 1, start: Instant::now(), scratch: Vec::with_capacity(8),
-            limits: Limits::default(), steps_left: u64::MAX, nesting: 0, host_fns: Vec::new(), allow_fs: true, input: None,
+            limits: Limits::default(), steps_left: u64::MAX, nesting: 0, host_fns: Vec::new(), allow_fs: true,
+            allow_os: true, args: Vec::new(), exit_request: None, input: None,
         };
         vm.sync_globals();
         vm
@@ -265,8 +279,16 @@ impl Vm {
         self.nesting += 1;
         let r = self.run(stop);
         self.nesting -= 1;
-        if r.is_err() { self.frames.truncate(stop); }
-        r
+        match r {
+            Ok(v) => Ok(v),
+            Err(mut e) => {
+                self.frames.truncate(stop);
+                if outermost {
+                    if let Some(code) = self.exit_request.take() { e.exit_code = Some(code); }
+                }
+                Err(e)
+            }
+        }
     }
 
     fn enter(&mut self, func: u32, base: usize, ret: usize, closure: Option<Rc<Closure>>) -> Result<(), String> {
@@ -290,7 +312,7 @@ impl Vm {
             let (line, col) = line_col(&file.source, span.start);
             trace.push(TraceEntry { function: p.name.clone(), file: file.path.clone(), line, col });
         }
-        RuntimeError { message, trace }
+        RuntimeError { message, trace, exit_code: None }
     }
 
     fn type_name(&self, t: &Type) -> String { DisplayType(t, self).to_string() }
@@ -767,6 +789,85 @@ impl Vm {
                         TableOp::IsEmpty => Value::Bool(tb.borrow().is_empty()),
                         TableOp::Keys => Value::Table(Rc::new(RefCell::new(tb.borrow().keys()))),
                         TableOp::Vals => Value::Table(Rc::new(RefCell::new(tb.borrow().vals()))),
+                        TableOp::Count => Value::Int(tb.borrow().count(&reg!(a))),
+                        TableOp::Find => Value::Int(tb.borrow().find(&reg!(a))),
+                        TableOp::Contains => Value::Bool(tb.borrow().contains(&reg!(a))),
+                        TableOp::Min => tri!(tb.borrow().extreme(false)),
+                        TableOp::Max => tri!(tb.borrow().extreme(true)),
+                        TableOp::First => tri!(tb.borrow().first()),
+                        TableOp::Last => tri!(tb.borrow().last()),
+                        TableOp::GetOr => { let d = reg!(b).clone(); tb.borrow().get_or(&reg!(a), d) }
+                        TableOp::Insert => {
+                            let (k, v) = (reg!(a).clone(), reg!(b).clone());
+                            tri!(tb.borrow_mut().insert(&k, v));
+                            Value::Void
+                        }
+                        TableOp::Remove => { let k = reg!(a).clone(); tri!(tb.borrow_mut().remove(&k)) }
+                        TableOp::SwapRemove => { let k = reg!(a).clone(); tri!(tb.borrow_mut().swap_remove(&k)) }
+                        TableOp::PopFront => tri!(tb.borrow_mut().pop_front()),
+                        TableOp::Extend => {
+                            let Value::Table(other) = reg!(a).clone() else { fail!("internal error: extend with a non-table") };
+                            // `t.edit(extend, t)` appends a copy of itself.
+                            let src = other.borrow().copy();
+                            tri!(tb.borrow_mut().extend(&src));
+                            Value::Void
+                        }
+                        TableOp::Sort => { tb.borrow_mut().sort(); Value::Void }
+                        TableOp::Reverse => { tb.borrow_mut().reverse(); Value::Void }
+                        TableOp::Shuffle => {
+                            let mut t = tb.borrow_mut();
+                            if let rt::TableData::List(v) = &mut t.data {
+                                for i in (1..v.len()).rev() {
+                                    let j = rt::builtins::random_index(&mut self.rng, i + 1);
+                                    v.swap(i, j);
+                                }
+                            }
+                            Value::Void
+                        }
+                        TableOp::Pick => {
+                            let t = tb.borrow();
+                            let vals = t.values();
+                            if vals.is_empty() { fail!("can't pick from an empty table") }
+                            vals[rt::builtins::random_index(&mut self.rng, vals.len())].clone()
+                        }
+                        TableOp::Copy => Value::Table(Rc::new(RefCell::new(tb.borrow().copy()))),
+                        TableOp::Slice => {
+                            let (x, y) = (reg!(a).clone(), reg!(b).clone());
+                            Value::Table(Rc::new(RefCell::new(tri!(tb.borrow().slice(&x, &y)))))
+                        }
+                        TableOp::Join => {
+                            let sep = match &reg!(a) { Value::Str(s) => s.clone(), _ => fail!("internal error: join separator") };
+                            let items: Vec<Value> = tb.borrow().values().to_vec();
+                            let mut out = String::new();
+                            for (i, v) in items.iter().enumerate() {
+                                if i > 0 { out.push_str(&sep); }
+                                out.push_str(&rt::format::to_display(v, &*self));
+                                if out.len() > rt::MAX_STRING_BYTES { fail!("join would build a string that is too long") }
+                            }
+                            Value::str(&out)
+                        }
+                        TableOp::SortBy | TableOp::Filter => {
+                            let f = reg!(a).clone();
+                            // Work on a snapshot: the callback may read or even change the table.
+                            let items: Vec<Value> = tb.borrow().values().to_vec();
+                            let mut results = Vec::with_capacity(items.len());
+                            for v in &items {
+                                let r = nested!(self.call_value(&f, vec![v.clone()]));
+                                results.push(r);
+                            }
+                            if top == TableOp::Filter {
+                                let kept: Vec<Value> = items.into_iter().zip(results)
+                                    .filter(|(_, keep)| matches!(keep, Value::Bool(true))).map(|(v, _)| v).collect();
+                                let t = tb.borrow();
+                                Value::Table(Rc::new(RefCell::new(Table::new_list(t.cap, t.val_ty.clone(), kept))))
+                            } else {
+                                let mut order: Vec<usize> = (0..items.len()).collect();
+                                order.sort_by(|&x, &y| rt::table::cmp_values(&results[x], &results[y]).unwrap_or(std::cmp::Ordering::Equal));
+                                let sorted: Vec<Value> = order.into_iter().map(|i| items[i].clone()).collect();
+                                tri!(tb.borrow_mut().replace_list(sorted));
+                                Value::Void
+                            }
+                        }
                     };
                     set!(d, result);
                 }

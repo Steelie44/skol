@@ -112,3 +112,31 @@ fn repl_keeps_state_and_echoes() {
     assert!(text.contains("expected s, found i"), "{text}");
     assert!(text.contains("skol> 3"), "{text}");
 }
+
+#[test]
+fn standard_library_tests_pass() {
+    let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lib");
+    let mut entries: Vec<_> = std::fs::read_dir(lib.join("tests")).unwrap().map(|e| e.unwrap().path()).collect();
+    entries.sort();
+    let mut ran = 0;
+    for path in entries {
+        if path.extension().and_then(|e| e.to_str()) != Some("skl") { continue; }
+        let output = skol().arg("run").arg("--lib").arg(&lib).arg(&path).output().unwrap();
+        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success(), "{} failed:\n{text}", path.display());
+        assert!(!text.contains("FAIL"), "{}:\n{text}", path.display());
+        ran += 1;
+    }
+    assert!(ran >= 4, "expected library tests, found {ran}");
+}
+
+#[test]
+fn script_arguments_and_exit_codes() {
+    let path = std::env::temp_dir().join(format!("skol_args_test_{}.skl", std::process::id()));
+    std::fs::write(&path, "from os use arg_count, arg, exit\nprint(arg_count(), arg(0), arg(1))\nexit(3)\nprint(\"unreachable\")\n").unwrap();
+    let out = skol().arg("run").arg(&path).arg("one").arg("--").arg("--seed").output().unwrap();
+    let _ = std::fs::remove_file(&path);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text, "2 one --seed\n");
+    assert_eq!(out.status.code(), Some(3));
+}

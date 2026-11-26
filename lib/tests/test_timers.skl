@@ -1,0 +1,47 @@
+from testing use test, expect, expect_eq_i, expect_near, test_summary
+from timers use Timer, Cooldown, Stopwatch
+
+class Gun:(Cooldown) { cooldown: f = 0.5 }
+
+var hits: i = 0
+
+fn main() -> i {
+    test("one-shot timer fires once", lambda() -> void {
+        var t: Timer = Timer(1.0, false)
+        t.on_timeout = lambda() -> void { hits += 1 }
+        t.start()
+        expect_eq_i(t.tick(0.5), 0, "half way")
+        expect_near(t.progress(), 0.5, 0.0001, "progress")
+        expect_eq_i(t.tick(0.6), 1, "fires")
+        expect(t.is_stopped(), "stops after firing")
+        expect_eq_i(t.tick(5.0), 0, "stays stopped")
+        expect_eq_i(hits, 1, "callback ran once")
+    })
+    test("repeating timer catches up on long frames", lambda() -> void {
+        var t: Timer = Timer(0.25, true)
+        t.start()
+        expect_eq_i(t.tick(1.0), 4, "four periods")
+        expect(not t.is_stopped(), "still running")
+        expect_near(t.time_left, 0.25, 0.0001, "next period")
+    })
+    test("cooldown component", lambda() -> void {
+        var g: Gun = Gun()
+        expect(g.trigger(), "first shot")
+        expect(not g.trigger(), "on cooldown")
+        g.tick_cooldown(0.25)
+        expect_near(g.cooldown_progress(), 0.5, 0.0001, "half recharged")
+        g.tick_cooldown(0.25)
+        expect(g.ready(), "ready again")
+    })
+    test("stopwatch measures real time", lambda() -> void {
+        var sw: Stopwatch = Stopwatch()
+        sw.start()
+        var spin: i = 0
+        while spin < 20000 { spin += 1 }
+        sw.stop()
+        var e: f = sw.elapsed()
+        expect(e >= 0.0, "non-negative")
+        expect_near(sw.elapsed(), e, 0.0, "frozen while stopped")
+    })
+    return test_summary()
+}

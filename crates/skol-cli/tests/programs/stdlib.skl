@@ -1,0 +1,96 @@
+# Built-in library coverage: table operations, strings, fmt, math, random, time.
+from math use sign, wrap, move_toward, smoothstep, inverse_lerp, remap, snapped, deg_to_rad, rad_to_deg, asin, exp, log, log10, pi
+from random use seed, randf, randi_range, randf_range, chance, rand_dir
+from time use date, date_string, ticks_msec
+
+class Enemy {
+    name: s = "?"
+    hp: i = 0
+    fn init(name: s, hp: i) {
+        self.name = name
+        self.hp = hp
+    }
+}
+
+# --- lists
+var nums: T16[i] = {5, 3, 9, 1, 7}
+nums.edit(sort)
+print(nums.view(join, ","), nums.iter(min), nums.iter(max), nums.iter(sum))
+nums.edit(insert, 2, 4)
+print(nums.view(join, ","), nums.iter(find, 4), nums.iter(find, 99), nums.iter(contains, 9), nums.iter(count, 1))
+print(nums.edit(remove, 0), nums.edit(swap_remove, 0), nums.view(join, ","))
+print(nums.pos(first), nums.pos(last), nums.pos(get_or, 99, -1), nums.edit(pop_front), nums.view(join, ","))
+nums.edit(reverse)
+print(nums.view(join, ","))
+var part: T16[i] = nums.view(slice, 1, 3)
+var cp: T16[i] = nums.view(copy)
+cp.edit(push, 100)
+print(part.view(join, ","), nums.iter(len), cp.iter(len))
+nums.edit(extend, part)
+print(nums.view(join, ","))
+var big: T16[i] = nums.view(filter, lambda(x: i) -> bool { return x >= 7 })
+print(big.view(join, ","))
+
+var es: T8[Enemy] = {Enemy("orc", 30), Enemy("bat", 5), Enemy("troll", 80), Enemy("imp", 5)}
+es.edit(sort_by, lambda(e: Enemy) -> i { return e.hp })
+var order: s = ""
+for e in es { order += e.name + " " }
+print(order)
+es.edit(sort_by, lambda(e: Enemy) -> s { return e.name })
+print(es.pos(first).name, es.pos(last).name)
+var strong: T8[Enemy] = es.view(filter, lambda(e: Enemy) -> bool { return e.hp > 10 })
+print(strong.iter(len))
+var queue: T4[s] = {}
+queue.edit(push, "a")
+queue.edit(push, "b")
+queue.edit(insert, 0, "z")
+print(queue.edit(pop_front), queue.edit(pop_front), queue.iter(len))
+
+# --- key/value tables
+var stock: T8[s, i] = {"pear": 3, "apple": 5, "fig": 1}
+print(stock.edit(remove, "apple"), stock.view(keys).view(join, ","), stock.pos(get_or, "kiwi", 0))
+stock.pos(set, "banana", 2)
+stock.edit(sort)
+print(stock.view(keys).view(join, ","), stock.iter(max), stock.iter(contains, 2), stock.iter(count, 1))
+var extra: T8[s, i] = {"fig": 10, "date": 4}
+stock.edit(extend, extra)
+print(stock.view(keys).view(join, ","), stock.pos(get, "fig"))
+stock.edit(reverse)
+print(stock.view(vals).view(join, ","))
+
+# --- strings and fmt
+print(fmt("{} has {.1} hp ({}%) {{x}}", "orc", 12.25, 50), fmt("{.3}", 2))
+print("7".pad_left(3, "0"), "[" + "ab".pad_right(4, ".") + "]", "stressed".reverse(), "a-b-c".count("-"), "a.b.c".rfind("."))
+print("  x ".trim_start() + "|", "|" + "  x ".trim_end(), " 12 ".is_int(), "1.5".is_float(), "x1".is_float())
+print("abc".is_alpha(), "ab1".is_alpha(), "2026".is_digit(), " \t".is_space(), "".is_space(), "A".code(), chr(97) + chr(9731))
+
+# --- math
+print(sign(-4), sign(0), sign(2.5), wrap(-1, 0, 4), wrap(9, 0, 4), wrap(370.0, 0.0, 360.0))
+print(move_toward(5.0, 0.0, 2.0), move_toward(1.0, 0.0, 2.0), smoothstep(0.0, 2.0, 1.0), inverse_lerp(10.0, 20.0, 15.0))
+print(remap(0.5, 0.0, 1.0, -10.0, 10.0), snapped(7.3, 0.5), rad_to_deg(deg_to_rad(90.0)), asin(1.0) == pi / 2.0)
+print(exp(0.0), log(1.0), log10(1000.0))
+
+# --- random (seeded, so the sequence repeats)
+seed(123)
+var r1: f = randf()
+var r2: i = randi_range(1, 6)
+seed(123)
+print(randf() == r1, randi_range(1, 6) == r2, chance(0.0), chance(1.0))
+var hits: i = 0
+var k: i = 0
+while k < 1000 {
+    var v: f = randf_range(2.0, 3.0)
+    if v >= 2.0 and v < 3.0 { hits += 1 }
+    k += 1
+}
+print(hits, rand_dir().length() > 0.999)
+var deck: T8[i] = {1, 2, 3, 4, 5, 6}
+deck.edit(shuffle)
+var sorted_deck: T8[i] = deck.view(copy)
+sorted_deck.edit(sort)
+print(sorted_deck.view(join, ""), deck.iter(contains, deck.view(pick)))
+
+# --- time
+var d: T8[s, i] = date(1700000000.0)
+print(d.pos(get, "year"), d.pos(get, "month"), d.pos(get, "day"), d.pos(get, "hour"), d.pos(get, "weekday"), d.pos(get, "yearday"))
+print(date_string(0.0), date_string(951782400.0), ticks_msec() >= 0)

@@ -1,0 +1,35 @@
+from testing use test, expect, expect_near, test_summary
+from ease use Tween, ease_linear, ease_in_quad, ease_out_quad, ease_in_out_quad, ease_out_cubic, ease_in_out_sine, ease_out_bounce, ease_out_elastic, ease_out_back, lerp_vec2
+
+fn main() -> i {
+    test("curves start at 0 and end at 1", lambda() -> void {
+        var curves: T16[fn(f) -> f] = {ease_linear, ease_in_quad, ease_out_quad, ease_in_out_quad, ease_out_cubic, ease_in_out_sine, ease_out_bounce, ease_out_elastic, ease_out_back}
+        for c in curves {
+            expect_near(c(0.0), 0.0, 0.000001, "starts at 0")
+            expect_near(c(1.0), 1.0, 0.000001, "ends at 1")
+        }
+        expect_near(ease_in_quad(0.5), 0.25, 0.000001, "in_quad midpoint")
+        expect_near(ease_in_out_quad(0.5), 0.5, 0.000001, "in_out midpoint")
+    })
+    test("tween reaches its end value", lambda() -> void {
+        var seen: f = -1.0
+        var done: bool = false
+        var tw: Tween = Tween(10.0, 20.0, 1.0)
+        tw.easing = ease_out_quad
+        tw.on_update = lambda(v: f) -> void { seen = v }
+        tw.on_done = lambda() -> void { done = true }
+        tw.start()
+        expect_near(seen, 10.0, 0.000001, "starts at start value")
+        tw.tick(0.5)
+        expect_near(seen, 17.5, 0.000001, "eased midpoint")
+        tw.tick(0.75)
+        expect_near(seen, 20.0, 0.000001, "ends exactly")
+        expect(done and tw.finished, "done callback")
+    })
+    test("lerp_vec2", lambda() -> void {
+        var p: vec2 = lerp_vec2({0.0, 0.0}, {10.0, 4.0}, 0.5)
+        expect_near(p.x, 5.0, 0.000001, "x")
+        expect_near(p.y, 2.0, 0.000001, "y")
+    })
+    return test_summary()
+}

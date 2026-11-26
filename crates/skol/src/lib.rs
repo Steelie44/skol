@@ -43,6 +43,8 @@ pub enum Error {
     Runtime(RuntimeError),
     /// The host used the API incorrectly (unknown function, wrong types...).
     Api(String),
+    /// The script called `exit(code)` (only possible after `allow_os(true)`).
+    Exit(i32),
 }
 
 impl fmt::Display for Error {
@@ -51,6 +53,7 @@ impl fmt::Display for Error {
             Error::Compile(d) => write!(f, "{d}"),
             Error::Runtime(e) => write!(f, "{e}"),
             Error::Api(m) => write!(f, "skol: {m}"),
+            Error::Exit(code) => write!(f, "script exited with code {code}"),
         }
     }
 }
@@ -68,12 +71,20 @@ pub struct Engine {
     output: Option<Output>,
     input: Option<Input>,
     loader: Box<dyn ModuleLoader>,
+    library_paths: Vec<std::path::PathBuf>,
+    custom_loader: bool,
     allow_fs: bool,
+    allow_os: bool,
+    args: Vec<String>,
     limits: Limits,
     seed: Option<u64>,
 }
 
 impl Default for Engine { fn default() -> Self { Engine::new() } }
+
+fn runtime(e: RuntimeError) -> Error {
+    match e.exit_code { Some(code) => Error::Exit(code), None => Error::Runtime(e) }
+}
 
 fn guard<T>(f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     panic::catch_unwind(AssertUnwindSafe(f))
@@ -90,8 +101,12 @@ impl Engine {
             vm: None,
             output: None,
             input: None,
-            loader: Box::new(FsLoader),
+            loader: Box::new(FsLoader::new()),
+            library_paths: Vec::new(),
+            custom_loader: false,
             allow_fs: false,
+            allow_os: false,
+            args: Vec::new(),
             limits: Limits::default(),
             seed: None,
         }
@@ -125,6 +140,33 @@ impl Engine {
         self
     }
 
+    /// Allow `os.env`, `os.has_env`, `os.exit` and `time.sleep`. Off by
+    /// default: they read the host's environment, end the script, or block
+    /// the calling thread.
+    pub fn allow_os(&mut self, allow: bool) -> &mut Self {
+        self.allow_os = allow;
+        if let Some(vm) = &mut self.vm { vm.allow_os = allow; }
+        self
+    }
+
+    /// Arguments the script sees through `os.arg_count()` and `os.arg(i)`.
+    pub fn set_args(&mut self, args: Vec<String>) -> &mut Self {
+        if let Some(vm) = &mut self.vm { vm.args = args.clone(); }
+        self.args = args;
+        self
+    }
+
+    /// Also look for imported modules in this folder (after the importing
+    /// file's own folder), e.g. Skol's standard `lib` folder. Ignored if you
+    /// installed your own loader with `set_module_loader`.
+    pub fn add_library_path(&mut self, dir: impl Into<std::path::PathBuf>) -> &mut Self {
+        self.library_paths.push(dir.into());
+        if !self.custom_loader {
+            self.loader = Box::new(FsLoader { search: self.library_paths.clone() });
+        }
+        self
+    }
+
     /// Bound every call into the script (call depth, loop iterations + calls,
     /// native nesting).
     pub fn set_limits(&mut self, limits: Limits) -> &mut Self {
@@ -148,6 +190,7 @@ impl Engine {
     /// How `from Name use ...` finds script modules (default: `Name.skl` next to the importing file).
     pub fn set_module_loader(&mut self, loader: impl ModuleLoader + 'static) -> &mut Self {
         self.loader = Box::new(loader);
+        self.custom_loader = true;
         self
     }
 
@@ -178,6 +221,8 @@ impl Engine {
             }));
             let mut vm = Vm::with_output(bc, out);
             vm.allow_fs = self.allow_fs;
+            vm.allow_os = self.allow_os;
+            vm.args = self.args.clone();
             vm.limits = self.limits.clone();
             vm.set_input(self.input.take().unwrap_or_else(|| Box::new(|| None)));
             if let Some(s) = self.seed { vm.seed(s); }
@@ -185,7 +230,7 @@ impl Engine {
             let inits = vm.bytecode().module_inits.clone();
             self.vm = Some(vm);
             let vm = self.vm.as_mut().expect("vm");
-            for init in inits { vm.call(init, vec![]).map_err(Error::Runtime)?; }
+            for init in inits { vm.call(init, vec![]).map_err(runtime)?; }
             Ok(())
         })
     }
@@ -215,7 +260,7 @@ impl Engine {
         }
         let values = args.into_values();
         guard(|| {
-            let v = self.vm()?.call(id, values).map_err(Error::Runtime)?;
+            let v = self.vm()?.call(id, values).map_err(runtime)?;
             R::from_value(&v).ok_or_else(|| Error::Api(format!("{name} returned an unexpected value")))
         })
     }

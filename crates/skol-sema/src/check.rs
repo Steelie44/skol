@@ -18,19 +18,66 @@ pub trait ModuleLoader {
     /// Return `None` if the module doesn't exist, otherwise its canonical
     /// path and source text (or an I/O error message).
     fn load(&mut self, importer: &str, name: &str) -> Option<Result<(String, String), String>>;
+    /// Where this loader looks, for "can't find module" errors.
+    fn searched(&self) -> String { "next to this file".into() }
 }
 
-/// Loads `Name.skl` from the importing file's directory.
-pub struct FsLoader;
+/// Loads `Name.skl` from the importing file's directory, then from each
+/// library folder in order.
+#[derive(Debug, Clone, Default)]
+pub struct FsLoader {
+    pub search: Vec<std::path::PathBuf>,
+}
+
+impl FsLoader {
+    /// Only the importing file's own folder (the embedding default).
+    pub fn new() -> FsLoader { FsLoader { search: Vec::new() } }
+
+    /// The command-line search order: the importing file's folder, every
+    /// folder in the `SKOL_PATH` environment variable, then the standard
+    /// library: a `lib` folder next to the `skol` executable or up to two
+    /// levels above it (so a build in `target/release` finds the repo's `lib`).
+    pub fn standard() -> FsLoader {
+        let mut search = Vec::new();
+        if let Some(p) = std::env::var_os("SKOL_PATH") {
+            search.extend(std::env::split_paths(&p).filter(|d| !d.as_os_str().is_empty()));
+        }
+        if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            let mut dir = Some(exe_dir.as_path());
+            for _ in 0..3 {
+                let Some(d) = dir else { break };
+                let lib = d.join("lib");
+                if lib.join("skol.lib").is_file() { search.push(lib); break; }
+                dir = d.parent();
+            }
+        }
+        FsLoader { search }
+    }
+
+    pub fn with_path(mut self, dir: impl Into<std::path::PathBuf>) -> FsLoader { self.search.push(dir.into()); self }
+
+    /// Human-readable list of the places searched, for error messages.
+    pub fn describe(&self) -> String {
+        if self.search.is_empty() { return "next to this file".into(); }
+        let dirs: Vec<String> = self.search.iter().map(|d| d.to_string_lossy().into_owned()).collect();
+        format!("next to this file and in {}", dirs.join(", "))
+    }
+}
 
 impl ModuleLoader for FsLoader {
     fn load(&mut self, importer: &str, name: &str) -> Option<Result<(String, String), String>> {
+        // Module names are plain identifiers, so they can't climb out of a folder.
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') { return None; }
         let dir = Path::new(importer).parent().map(Path::to_path_buf).unwrap_or_default();
-        let path = dir.join(format!("{name}.skl"));
-        if !path.is_file() { return None; }
+        let file = format!("{name}.skl");
+        let path = std::iter::once(dir).chain(self.search.iter().cloned())
+            .map(|d| d.join(&file))
+            .find(|p| p.is_file())?;
         let shown = path.to_string_lossy().into_owned();
         Some(std::fs::read_to_string(&path).map(|s| (shown, s)).map_err(|e| e.to_string()))
     }
+
+    fn searched(&self) -> String { self.describe() }
 }
 
 // ------------------------------------------------------------------ state
@@ -385,6 +432,18 @@ impl Checker {
             }
             return Ok(());
         }
+        if builtins::is_builtin_module(&imp.module) {
+            for name in &imp.names {
+                let sym = match builtins::module_symbol(&imp.module, name) {
+                    Some(MathSym::Func(f)) => Symbol::MathFn(f),
+                    Some(MathSym::Const(c)) => Symbol::MathConst(c),
+                    None => return Err(self.diag(format!(
+                        "module '{}' has no '{name}' (it has: {})", imp.module, builtins::module_names(&imp.module).join(", ")))),
+                };
+                self.define(m, name, sym)?;
+            }
+            return Ok(());
+        }
         let importer = self.modules[m].path.clone();
         match loader.load(&importer, &imp.module) {
             Some(Ok((path, source))) => {
@@ -399,27 +458,7 @@ impl Checker {
                 Ok(())
             }
             Some(Err(e)) => Err(self.diag(format!("couldn't read module '{}': {e}", imp.module))),
-            None if imp.module == "io" => {
-                for name in &imp.names {
-                    let Some(f) = builtins::io_symbol(name) else {
-                        return Err(self.diag(format!("module 'io' has no '{name}'")));
-                    };
-                    self.define(m, name, Symbol::MathFn(f))?;
-                }
-                Ok(())
-            }
-            None if imp.module == "math" => {
-                for name in &imp.names {
-                    let sym = match builtins::math_symbol(name) {
-                        Some(MathSym::Func(f)) => Symbol::MathFn(f),
-                        Some(MathSym::Const(c)) => Symbol::MathConst(c),
-                        None => return Err(self.diag(format!("module 'math' has no '{name}'"))),
-                    };
-                    self.define(m, name, sym)?;
-                }
-                Ok(())
-            }
-            None => Err(self.diag(format!("can't find module '{}' (looked for {}.skl next to this file)", imp.module, imp.module))),
+            None => Err(self.diag(format!("can't find module '{}' (looked for {}.skl {})", imp.module, imp.module, loader.searched()))),
         }
     }
 
@@ -1077,7 +1116,7 @@ impl Checker {
             }
             A::Binary { left, op, right } => self.binary(left, *op, right)?,
             A::Field { object, field } => self.field(object, field)?,
-            A::Call { callee, args } => self.call(callee, args)?,
+            A::Call { callee, args } => self.call(callee, args, expected)?,
             A::MethodCall { object, method, args } => self.method_call(object, method, args, expected)?,
             A::Index { object, index } => self.index(object, index)?,
             A::Lambda { params, ret_ty, body } => self.lambda(params, ret_ty, body)?,
@@ -1302,7 +1341,7 @@ impl Checker {
         Ok(out)
     }
 
-    fn call(&mut self, callee: &ast::Expr, args: &[ast::Expr]) -> R<Expr> {
+    fn call(&mut self, callee: &ast::Expr, args: &[ast::Expr], expected: Option<&Type>) -> R<Expr> {
         if let ast::ExprKind::Ident(name) = &callee.kind {
             match self.resolve(name) {
                 Some(VarRef::Sym(Symbol::Func(f))) => {
@@ -1318,13 +1357,13 @@ impl Checker {
                 }
                 Some(VarRef::Sym(Symbol::Comp(_))) =>
                     return Err(self.diag(format!("component '{name}' can't be created on its own; include it in a class, e.g. class Thing:({name}) {{ }}"))),
-                Some(VarRef::Sym(Symbol::MathFn(f))) => return self.builtin_call(f, args),
+                Some(VarRef::Sym(Symbol::MathFn(f))) => return self.builtin_call(f, args, expected),
                 Some(VarRef::Sym(Symbol::Host(id))) => {
                     let sig = self.host_fns[id as usize].clone();
                     let args = self.args_for(&format!("{}()", sig.name), &sig.params, args)?;
                     return Ok(Expr::new(ExprKind::CallBuiltin { builtin: ir::Builtin::Host(id), args }, sig.ret));
                 }
-                Some(VarRef::Prelude(p)) => return self.builtin_call(p, args),
+                Some(VarRef::Prelude(p)) => return self.builtin_call(p, args, expected),
                 Some(VarRef::Sym(Symbol::Signal(s))) => {
                     let g = self.prog.signals[s as usize].global;
                     let sig = Expr { span: Span::default(), kind: ExprKind::Global(g), ty: Type::Signal(s) };
@@ -1344,9 +1383,21 @@ impl Checker {
         }
     }
 
-    fn builtin_call(&mut self, name: &str, args: &[ast::Expr]) -> R<Expr> {
+    fn builtin_call(&mut self, name: &str, args: &[ast::Expr], expected: Option<&Type>) -> R<Expr> {
         let mut checked = Vec::new();
         for a in args { checked.push(self.expr(a, None)?); }
+        if builtins::needs_capacity(name) {
+            if checked.len() != 1 { return Err(self.diag(format!("{name}() expects 1 argument, got {}", checked.len()))); }
+            let cap = match expected {
+                Some(Type::List { cap, elem }) if **elem == Type::Str => *cap,
+                _ => return Err(self.diag(format!(
+                    "{name} needs to know how many entries to allow; bind it to a typed table, e.g. var lines: T256[s] = {name}(path)"))),
+            };
+            let path = self.coerce(checked.pop().unwrap(), &Type::Str, &format!("argument 1 of {name}()"))?;
+            let b = if name == "read_lines" { ir::Builtin::ReadLines } else { ir::Builtin::ListDir };
+            let cap_arg = Expr::new(ExprKind::Int(cap as i64), Type::Int);
+            return Ok(Expr::new(ExprKind::CallBuiltin { builtin: b, args: vec![path, cap_arg] }, Type::list(cap, Type::Str)));
+        }
         let types: Vec<Type> = checked.iter().map(|e| e.ty.clone()).collect();
         let resolved = builtins::resolve_function(name, &types).map_err(|m| self.diag(m))?;
         self.finish_builtin(name, resolved, checked)
@@ -1528,6 +1579,69 @@ impl Checker {
             TableOp::IsEmpty => (vec![], Type::Bool),
             TableOp::Keys => (vec![], Type::list(cap, key.clone())),
             TableOp::Vals => (vec![], Type::list(cap, val.clone())),
+            TableOp::Count => (vec![val.clone()], Type::Int),
+            TableOp::Contains => (vec![val.clone()], Type::Bool),
+            TableOp::Find => {
+                if !is_list { return Err(list_only(self, "; use .pos(has, key) to look up keys")); }
+                (vec![val.clone()], Type::Int)
+            }
+            TableOp::Min | TableOp::Max => match &val {
+                Type::Int | Type::Float | Type::Str => (vec![], val.clone()),
+                _ => return Err(self.diag(format!("{what} needs a table of i, f or s values, found {}", self.tn(&tty)))),
+            },
+            TableOp::First | TableOp::Last | TableOp::PopFront | TableOp::Pick => {
+                if !is_list { return Err(list_only(self, "")); }
+                (vec![], val.clone())
+            }
+            TableOp::GetOr => (vec![key.clone(), val.clone()], val.clone()),
+            TableOp::Insert => {
+                if !is_list { return Err(list_only(self, "; use .pos(set, key, value) to add entries")); }
+                (vec![Type::Int, val.clone()], Type::Void)
+            }
+            TableOp::Remove => (vec![key.clone()], val.clone()),
+            TableOp::SwapRemove => {
+                if !is_list { return Err(list_only(self, "; use .edit(remove, key)")); }
+                (vec![Type::Int], val.clone())
+            }
+            TableOp::Extend => (vec![tty.clone()], Type::Void),
+            TableOp::Sort => {
+                if is_list && !matches!(val, Type::Int | Type::Float | Type::Str | Type::Bool) {
+                    return Err(self.diag(format!(
+                        "{what} needs a list of i, f, s or bool; to sort {} use .edit(sort_by, lambda(x: {}) -> f {{ ... }})",
+                        self.tn(&tty), self.tn(&val))));
+                }
+                (vec![], Type::Void)
+            }
+            TableOp::Reverse => (vec![], Type::Void),
+            TableOp::Shuffle => {
+                if !is_list { return Err(list_only(self, "")); }
+                (vec![], Type::Void)
+            }
+            TableOp::Copy => (vec![], tty.clone()),
+            TableOp::Slice => {
+                if !is_list { return Err(list_only(self, "")); }
+                (vec![Type::Int, Type::Int], tty.clone())
+            }
+            TableOp::Join => {
+                if !is_list { return Err(list_only(self, "; join its .view(vals) or .view(keys)")); }
+                (vec![Type::Str], Type::Str)
+            }
+            TableOp::SortBy | TableOp::Filter => {
+                if !is_list { return Err(list_only(self, "")); }
+                if rest.len() != 1 {
+                    return Err(self.diag(format!("{what} expects 1 argument (a function), got {}", rest.len())));
+                }
+                let f = self.expr(&rest[0], None)?;
+                let ok_ret = |r: &Type| if op == TableOp::Filter { *r == Type::Bool } else { matches!(r, Type::Int | Type::Float | Type::Str) };
+                let want = if op == TableOp::Filter { "bool" } else { "i, f or s" };
+                match &f.ty {
+                    Type::Func { params, ret } if params.len() == 1 && params[0] == val && ok_ret(ret) => {}
+                    other => return Err(self.diag(format!(
+                        "{what} needs a function fn({}) -> {want}, found {}", self.tn(&val), self.tn(other)))),
+                }
+                let ret = if op == TableOp::Filter { tty.clone() } else { Type::Void };
+                return Ok(Expr { span: Span::default(), kind: ExprKind::Table { op, table: Box::new(table), args: vec![f] }, ty: ret });
+            }
         };
         let checked = self.args_for(&what, &params, rest)?;
         Ok(Expr { span: Span::default(), kind: ExprKind::Table { op, table: Box::new(table), args: checked }, ty: ret })

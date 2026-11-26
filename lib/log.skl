@@ -1,0 +1,58 @@
+# log: leveled logging to the console and, optionally, a file.
+#
+#   from log use Logger, LOG_DEBUG, LOG_INFO, LOG_WARN, LOG_ERROR
+#
+#   var log: Logger = Logger("game")
+#   log.info("level loaded")
+#   log.warn(fmt("low health: {}", hp))
+#   log.level = LOG_DEBUG            # show everything
+#   log.file = "game.log"            # also append to a file (needs file access)
+#
+# Lines look like:  [   12.35s] WARN  game: low health: 9
+
+from io use append_file
+from time use time, date_string
+
+const LOG_DEBUG: i = 0
+const LOG_INFO: i = 1
+const LOG_WARN: i = 2
+const LOG_ERROR: i = 3
+const LOG_OFF: i = 4
+
+class Logger {
+    name: s = "log"
+    # Messages below this level are skipped.
+    level: i = 1
+    to_console: bool = true
+    # When not "", every line is also appended to this file.
+    file: s = ""
+    # true: seconds since the program started.  false: UTC date and time.
+    relative_time: bool = true
+    # Called with every line that passes the level check (for an in-game console).
+    on_line: fn(s) = lambda(line: s) -> void { pass }
+
+    fn init(name: s) { self.name = name }
+
+    fn debug(msg: s) -> void { self.write(0, msg) }
+    fn info(msg: s) -> void { self.write(1, msg) }
+    fn warn(msg: s) -> void { self.write(2, msg) }
+    fn error(msg: s) -> void { self.write(3, msg) }
+
+    fn write(lvl: i, msg: s) -> void {
+        if lvl < self.level { return }
+        var stamp: s = ""
+        if self.relative_time {
+            stamp = fmt("{.2}s", time()).pad_left(9, " ")
+        } else {
+            stamp = date_string()
+        }
+        var tag: s = "DEBUG"
+        if lvl == 1 { tag = "INFO " }
+        if lvl == 2 { tag = "WARN " }
+        if lvl >= 3 { tag = "ERROR" }
+        var line: s = "[" + stamp + "] " + tag + " " + self.name + ": " + msg
+        if self.to_console { print(line) }
+        if self.file != "" { append_file(self.file, line + "\n") }
+        self.on_line(line)
+    }
+}

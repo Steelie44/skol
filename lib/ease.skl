@@ -1,0 +1,127 @@
+# ease: easing curves and tweens for smooth animation.
+#
+#   from ease use Tween, ease_out_cubic, ease_in_out_sine
+#
+#   var fade: Tween = Tween(0.0, 1.0, 0.5)    # from, to, seconds
+#   fade.easing = ease_out_cubic
+#   fade.on_update = lambda(v: f) -> void { alpha = v }
+#   fade.start()
+#   ...each frame: fade.tick(dt)
+#
+# Every easing function takes t from 0.0 to 1.0 and returns the eased
+# progress (0.0 at the start, 1.0 at the end; back/elastic overshoot).
+
+from math use sin, cos, pow, sqrt, pi, clamp
+
+fn ease_linear(t: f) -> f { return t }
+
+fn ease_in_quad(t: f) -> f { return t * t }
+fn ease_out_quad(t: f) -> f { return 1.0 - (1.0 - t) * (1.0 - t) }
+fn ease_in_out_quad(t: f) -> f {
+    if t < 0.5 { return 2.0 * t * t }
+    return 1.0 - pow(-2.0 * t + 2.0, 2.0) / 2.0
+}
+
+fn ease_in_cubic(t: f) -> f { return t * t * t }
+fn ease_out_cubic(t: f) -> f { return 1.0 - pow(1.0 - t, 3.0) }
+fn ease_in_out_cubic(t: f) -> f {
+    if t < 0.5 { return 4.0 * t * t * t }
+    return 1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0
+}
+
+fn ease_in_sine(t: f) -> f { return 1.0 - cos(t * pi / 2.0) }
+fn ease_out_sine(t: f) -> f { return sin(t * pi / 2.0) }
+fn ease_in_out_sine(t: f) -> f { return -(cos(pi * t) - 1.0) / 2.0 }
+
+fn ease_in_expo(t: f) -> f {
+    if t <= 0.0 { return 0.0 }
+    return pow(2.0, 10.0 * t - 10.0)
+}
+fn ease_out_expo(t: f) -> f {
+    if t >= 1.0 { return 1.0 }
+    return 1.0 - pow(2.0, -10.0 * t)
+}
+
+fn ease_in_back(t: f) -> f {
+    const c1: f = 1.70158
+    return (c1 + 1.0) * t * t * t - c1 * t * t
+}
+fn ease_out_back(t: f) -> f {
+    const c1: f = 1.70158
+    return 1.0 + (c1 + 1.0) * pow(t - 1.0, 3.0) + c1 * pow(t - 1.0, 2.0)
+}
+
+fn ease_out_elastic(t: f) -> f {
+    if t <= 0.0 { return 0.0 }
+    if t >= 1.0 { return 1.0 }
+    return pow(2.0, -10.0 * t) * sin((t * 10.0 - 0.75) * (2.0 * pi / 3.0)) + 1.0
+}
+
+fn ease_out_bounce(t: f) -> f {
+    const n1: f = 7.5625
+    const d1: f = 2.75
+    if t < 1.0 / d1 { return n1 * t * t }
+    if t < 2.0 / d1 {
+        var u: f = t - 1.5 / d1
+        return n1 * u * u + 0.75
+    }
+    if t < 2.5 / d1 {
+        var u: f = t - 2.25 / d1
+        return n1 * u * u + 0.9375
+    }
+    var u: f = t - 2.625 / d1
+    return n1 * u * u + 0.984375
+}
+fn ease_in_bounce(t: f) -> f { return 1.0 - ease_out_bounce(1.0 - t) }
+
+# Animates a number from start_value to end_value over `duration` seconds.
+class Tween {
+    start_value: f = 0.0
+    end_value: f = 1.0
+    duration: f = 1.0
+    elapsed: f = 0.0
+    running: bool = false
+    finished: bool = false
+    easing: fn(f) -> f = ease_linear
+    on_update: fn(f) = lambda(v: f) -> void { pass }
+    on_done: fn() = lambda() -> void { pass }
+
+    fn init(start_value: f, end_value: f, duration: f) {
+        if duration <= 0.0 { error("Tween duration must be greater than 0") }
+        self.start_value = start_value
+        self.end_value = end_value
+        self.duration = duration
+    }
+
+    fn start() -> void {
+        self.elapsed = 0.0
+        self.running = true
+        self.finished = false
+        self.on_update(self.start_value)
+    }
+
+    fn stop() -> void { self.running = false }
+
+    # Current eased value.
+    fn value() -> f {
+        var t: f = clamp(self.elapsed / self.duration, 0.0, 1.0)
+        return self.start_value + (self.end_value - self.start_value) * self.easing(t)
+    }
+
+    fn tick(dt: f) -> void {
+        if not self.running { return }
+        self.elapsed += dt
+        if self.elapsed >= self.duration {
+            self.elapsed = self.duration
+            self.running = false
+            self.finished = true
+            self.on_update(self.end_value)
+            self.on_done()
+            return
+        }
+        self.on_update(self.value())
+    }
+}
+
+# Ease between two points: lerp_vec2(a, b, ease_out_quad(t)).
+fn lerp_vec2(a: vec2, b: vec2, t: f) -> vec2 { return a + (b - a) * t }

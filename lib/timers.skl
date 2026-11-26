@@ -1,0 +1,130 @@
+# timers: countdown timers, cooldowns and stopwatches.
+#
+#   from timers use Timer, Cooldown, Stopwatch
+#
+# Timer and Cooldown run on the delta time you pass to tick(); Stopwatch
+# measures real time.
+
+from time use time
+
+# Counts down from `duration` and calls on_timeout when it reaches zero.
+#
+#   var spawn: Timer = Timer(2.0, true)        # every 2 seconds
+#   spawn.on_timeout = lambda() -> void { spawn_enemy() }
+#   spawn.start()
+#   ...each frame: spawn.tick(dt)
+class Timer {
+    duration: f = 1.0
+    repeat: bool = false
+    time_left: f = 0.0
+    running: bool = false
+    on_timeout: fn() = lambda() -> void { pass }
+
+    fn init(duration: f, repeat: bool) {
+        if duration <= 0.0 { error("Timer duration must be greater than 0") }
+        self.duration = duration
+        self.repeat = repeat
+    }
+
+    # Start (or restart) from the full duration.
+    fn start() -> void {
+        self.time_left = self.duration
+        self.running = true
+    }
+
+    fn stop() -> void { self.running = false }
+
+    fn is_stopped() -> bool { return not self.running }
+
+    # 0.0 when started, 1.0 when finished.
+    fn progress() -> f {
+        if not self.running and self.time_left <= 0.0 { return 1.0 }
+        return 1.0 - self.time_left / self.duration
+    }
+
+    # Advance by dt seconds. Returns how many times the timer fired, which
+    # can be more than 1 for a repeating timer and a long frame.
+    fn tick(dt: f) -> i {
+        if not self.running { return 0 }
+        self.time_left -= dt
+        var fired: i = 0
+        while self.running and self.time_left <= 0.0 {
+            fired += 1
+            if self.repeat {
+                self.time_left += self.duration
+                if fired >= 100 { self.time_left = self.duration }   # drop a huge backlog
+            } else {
+                self.time_left = 0.0
+                self.running = false
+            }
+            self.on_timeout()
+        }
+        return fired
+    }
+}
+
+# Add to any class that can only act every so often:
+#
+#   class Gun:(Cooldown) { cooldown: f = 0.25 }
+#   if gun.trigger() { fire() }
+#   ...each frame: gun.tick_cooldown(dt)
+comp Cooldown {
+    cooldown: f = 1.0
+    cooldown_left: f = 0.0
+
+    fn ready() -> bool { return self.cooldown_left <= 0.0 }
+
+    # Act if ready: starts the cooldown and returns true, else returns false.
+    fn trigger() -> bool {
+        if self.cooldown_left > 0.0 { return false }
+        self.cooldown_left = self.cooldown
+        return true
+    }
+
+    fn tick_cooldown(dt: f) -> void {
+        if self.cooldown_left > 0.0 { self.cooldown_left -= dt }
+    }
+
+    # 0.0 just after triggering, 1.0 when ready again.
+    fn cooldown_progress() -> f {
+        if self.cooldown <= 0.0 or self.cooldown_left <= 0.0 { return 1.0 }
+        return 1.0 - self.cooldown_left / self.cooldown
+    }
+}
+
+# Measures real elapsed time, for profiling or speedruns.
+#
+#   var sw: Stopwatch = Stopwatch()
+#   sw.start()
+#   ...
+#   print(sw.elapsed_ms())
+class Stopwatch {
+    started_at: f = 0.0
+    banked: f = 0.0
+    running: bool = false
+
+    fn start() -> void {
+        if self.running { return }
+        self.started_at = time()
+        self.running = true
+    }
+
+    fn stop() -> void {
+        if not self.running { return }
+        self.banked += time() - self.started_at
+        self.running = false
+    }
+
+    fn reset() -> void {
+        self.banked = 0.0
+        self.started_at = time()
+    }
+
+    # Seconds measured so far (keeps counting while running).
+    fn elapsed() -> f {
+        if self.running { return self.banked + time() - self.started_at }
+        return self.banked
+    }
+
+    fn elapsed_ms() -> f { return self.elapsed() * 1000.0 }
+}

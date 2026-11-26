@@ -2,7 +2,7 @@
   "name": "skol",
   "displayName": "Skol",
   "description": "Syntax highlighting, live type errors and a Run button for Skol (.skl)",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "skol",
   "license": "MIT",
   "engines": {
