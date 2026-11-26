@@ -1,0 +1,44 @@
+# Reusable components, imported by main.skl.
+
+signal died(entity, cause)
+
+comp Health {
+    max_health: i = 100
+    current_health: i = 100
+
+    fn take_damage(amount: i) {
+        self.current_health -= amount
+        if self.current_health <= 0 {
+            self.current_health = 0
+            died.emit(self, "damage")
+        }
+    }
+
+    fn heal(amount: i) {
+        self.current_health += amount
+        if self.current_health > self.max_health { self.current_health = self.max_health }
+    }
+
+    fn alive() -> bool { return self.current_health > 0 }
+}
+
+comp Movement {
+    pos: vec2 = {0.0, 0.0}
+    speed: f = 1.0
+
+    fn step_towards(target: vec2, dt: f) {
+        var to: vec2 = target - self.pos
+        if to.length() > 0.001 {
+            self.pos += to.normalized() * self.speed * dt
+        }
+    }
+}
+
+comp Inventory {
+    items: T8[s] = {}
+    gold: T8[s, i] = {}
+
+    fn pick_up(item: s) {
+        if self.items.iter(len) < 8 { self.items.edit(push, item) }
+    }
+}

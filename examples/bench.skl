@@ -1,0 +1,31 @@
+# Rough VM benchmark: recursion, arithmetic loops and table operations.
+from math use time
+
+fn fib(n: i) -> i {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    var t0: f = time()
+    print("fib(30) =", fib(30), "in", time() - t0, "s")
+
+    t0 = time()
+    var acc: i = 0
+    var n: i = 0
+    while n < 10000000 {
+        acc += n * 2 - 1
+        n += 1
+    }
+    print("10M loop iterations, acc =", acc, "in", time() - t0, "s")
+
+    t0 = time()
+    var nums: T1024[i] = {}
+    var total: i = 0
+    for round in range(2000) {
+        nums.edit(clear)
+        for k in range(1000) { nums.edit(push, k) }
+        total += nums.iter(sum)
+    }
+    print("2M table pushes + 2000 sums, total =", total, "in", time() - t0, "s")
+}

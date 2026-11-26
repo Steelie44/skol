@@ -1,0 +1,69 @@
+# A tiny simulation that uses every Skol feature.
+# Run it with:  skol examples/game/main.skl
+
+from Components use Health, Movement, Inventory, died
+from math use floor, random_int
+
+class Player:(Health, Movement, Inventory) {
+    name: s = "hero"
+    speed: f = 3.0
+
+    fn init(name: s) { self.name = name }
+}
+
+class Slime:(Health, Movement) {
+    max_health: i = 30
+    current_health: i = 30
+    speed: f = 0.5
+    damage: i = 7
+}
+
+const ROUNDS: i = 6
+var kills: i = 0
+
+fn spawn(count: i) -> T16[Slime] {
+    var slimes: T16[Slime] = {}
+    for k in range(count) {
+        var slime: Slime = Slime()
+        slime.pos = {float(k) * 2.0, 5.0}
+        slimes.edit(push, slime)
+    }
+    return slimes
+}
+
+fn main() {
+    var p: Player = Player("Ada")
+    var slimes: T16[Slime] = spawn(3)
+
+    # Signal listener: a closure that updates a global and captures `p`.
+    died.listen(lambda(who: Health, cause: s) -> void {
+        if who != p {
+            kills += 1
+            p.pick_up("slime gel")
+        }
+    })
+
+    var round: i = 1
+    while round <= ROUNDS and p.alive() {
+        for slime in slimes {
+            if slime.alive() {
+                slime.step_towards(p.pos, 1.0)
+                p.step_towards(slime.pos, 0.5)
+                var hit: i = random_int(10, 20)
+                slime.take_damage(hit)
+                if slime.alive() { p.take_damage(slime.damage) }
+            }
+        }
+        print("round", round, "| hp", p.current_health, "| pos", p.pos, "| kills", kills)
+        round += 1
+    }
+
+    var hp_left: T16[i] = {}
+    for slime in slimes { hp_left.edit(push, slime.current_health) }
+    print("slime hp:", hp_left, "total", hp_left.iter(sum), "even ones", hp_left.iter(even))
+
+    p.gold.pos(set, "copper", kills * 3)
+    p.gold.pos(set, "silver", floor(float(kills) / 2.0))
+    print(p.name, "carries", p.items, "and", p.gold)
+    print("gold types:", p.gold.view(keys), "amounts:", p.gold.view(vals))
+}

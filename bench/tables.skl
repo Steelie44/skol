@@ -1,0 +1,18 @@
+# 2M indexed read-modify-writes + 2K string-keyed map lookups.
+from math use time
+
+fn main() {
+    var grid: T1024[i] = {}
+    for k in range(1024) { grid.edit(push, 0) }
+    var names: T64[s, i] = {}
+    for k in range(64) { names["e" + str(k)] = k }
+    var t0: f = time()
+    var acc: i = 0
+    for round in range(2000) {
+        for k in range(1024) {
+            grid[k] = grid[k] + k
+        }
+        acc += names["e" + str(round % 64)]
+    }
+    print("RESULT", acc + grid[1023], time() - t0)
+}

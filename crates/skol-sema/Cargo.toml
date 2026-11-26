@@ -1,0 +1,9 @@
+[package]
+name = "skol-sema"
+description = "Skol name resolution and type checking: AST -> typed IR"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+skol-syntax = { path = "../skol-syntax" }
+skol-ir = { path = "../skol-ir" }

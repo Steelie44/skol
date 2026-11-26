@@ -1,0 +1,121 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Skol",
+  "scopeName": "source.skl",
+  "fileTypes": ["skl"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#tableops" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#calls" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "tableops": {
+      "match": "(\\.)(iter|pos|edit|view)\\s*(\\()\\s*(len|sum|even|cut|get|set|has|push|pop|clear|is_empty|keys|vals)\\b",
+      "captures": {
+        "2": { "name": "support.function.table.skl" },
+        "4": { "name": "support.constant.table-op.skl" }
+      }
+    },
+    "comment": {
+      "name": "comment.line.number-sign.skl",
+      "match": "#.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.skl",
+      "begin": "\"",
+      "end": "\"|$",
+      "patterns": [
+        { "name": "constant.character.escape.skl", "match": "\\\\[nrt0\"\\\\]" },
+        { "name": "invalid.illegal.escape.skl", "match": "\\\\." }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.skl" },
+            "2": { "name": "entity.name.function.skl" }
+          }
+        },
+        {
+          "match": "\\b(class|comp)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.class.skl" },
+            "2": { "name": "entity.name.type.class.skl" }
+          }
+        },
+        {
+          "match": "\\b(signal)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.signal.skl" },
+            "2": { "name": "entity.name.function.signal.skl" }
+          }
+        },
+        {
+          "match": "\\b(const|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.skl" },
+            "2": { "name": "variable.other.declaration.skl" }
+          }
+        },
+        {
+          "match": "\\b(from)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(use)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.import.skl" },
+            "2": { "name": "entity.name.namespace.skl" },
+            "3": { "name": "keyword.control.import.skl" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.skl", "match": "\\b(if|else|for|in|while|return|pass|break|continue)\\b" },
+        { "name": "keyword.control.import.skl", "match": "\\b(from|use)\\b" },
+        { "name": "storage.type.skl", "match": "\\b(fn|class|comp|signal|lambda)\\b" },
+        { "name": "storage.modifier.skl", "match": "\\b(const|var)\\b" },
+        { "name": "keyword.operator.logical.skl", "match": "\\b(and|or|not)\\b" },
+        { "name": "variable.language.self.skl", "match": "\\bself\\b" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "support.type.primitive.skl", "match": "\\b(i|f|s|bool|void|vec2|vec3|vec4)\\b" },
+        { "name": "support.type.table.skl", "match": "\\bT[0-9]+\\b" },
+        { "name": "invalid.illegal.table.skl", "match": "\\bT\\b(?=\\s*\\[)" },
+        { "name": "entity.name.type.skl", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "constants": {
+      "name": "constant.language.boolean.skl",
+      "match": "\\b(true|false)\\b"
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.float.skl", "match": "\\b[0-9]+\\.[0-9]+\\b" },
+        { "name": "constant.numeric.integer.skl", "match": "\\b[0-9]+\\b" }
+      ]
+    },
+    "calls": {
+      "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": { "1": { "name": "entity.name.function.call.skl" } }
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.arrow.skl", "match": "->" },
+        { "name": "keyword.operator.assignment.skl", "match": ":=|\\+=|-=|=(?!=)" },
+        { "name": "keyword.operator.comparison.skl", "match": "==|!=|<=|>=|<|>" },
+        { "name": "keyword.operator.arithmetic.skl", "match": "[+\\-*/%]" },
+        { "name": "punctuation.separator.skl", "match": "[,:.]" }
+      ]
+    }
+  }
+}

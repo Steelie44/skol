@@ -1,0 +1,14 @@
+# 200K string builds + string-keyed counting.
+from math use time
+
+fn main() {
+    var counts: T1024[s, i] = {}
+    var total: i = 0
+    var t0: f = time()
+    for k in range(200000) {
+        var key: s = "k" + str(k % 1000)
+        total += key.len()
+        if counts.pos(has, key) { counts[key] += 1 } else { counts[key] = 1 }
+    }
+    print("RESULT", total + counts.iter(len), time() - t0)
+}

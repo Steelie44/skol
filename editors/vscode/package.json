@@ -1,0 +1,110 @@
+{
+  "name": "skol",
+  "displayName": "Skol",
+  "description": "Syntax highlighting, live type errors and a Run button for Skol (.skl)",
+  "version": "0.3.1",
+  "publisher": "skol",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:skol"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "skol",
+        "aliases": [
+          "Skol",
+          "skol"
+        ],
+        "extensions": [
+          ".skl"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/skol-light.svg",
+          "dark": "./icons/skol-dark.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "skol",
+        "scopeName": "source.skl",
+        "path": "./syntaxes/skol.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "skol.run",
+        "title": "Run File",
+        "category": "Skol",
+        "icon": "$(play)"
+      },
+      {
+        "command": "skol.check",
+        "title": "Check Current File",
+        "category": "Skol"
+      },
+      {
+        "command": "skol.showAst",
+        "title": "Show AST",
+        "category": "Skol"
+      },
+      {
+        "command": "skol.showTokens",
+        "title": "Show Tokens",
+        "category": "Skol"
+      },
+      {
+        "command": "skol.showIr",
+        "title": "Show Typed IR",
+        "category": "Skol"
+      },
+      {
+        "command": "skol.showBytecode",
+        "title": "Show Bytecode",
+        "category": "Skol"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "skol.run",
+          "when": "editorLangId == skol",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "skol.run",
+        "key": "ctrl+f5",
+        "mac": "cmd+f5",
+        "when": "editorLangId == skol"
+      }
+    ],
+    "configuration": {
+      "title": "Skol",
+      "properties": {
+        "skol.executablePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the skol executable. If empty, the extension looks for target/debug/skol or target/release/skol in the workspace, then 'skol' on your PATH."
+        },
+        "skol.checkOnType": {
+          "type": "boolean",
+          "default": true,
+          "description": "Re-check the file as you type (otherwise only on open and save)."
+        }
+      }
+    }
+  },
+  "icon": "icons/skol.png"
+}

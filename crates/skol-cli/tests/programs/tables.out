@@ -1,0 +1,16 @@
+len 5 sum 15
+even {2, 4} original {1, 2, 3, 4, 5}
+after cut {1, 2, 0, 4, 5} len 5
+popped 6 {1, 2, 0, 4, 5}
+pushed {1, 2, 0, 4, 5, 7}
+first 1 now 100 has 9: false
+empty? false keys {0, 1, 2, 3, 4, 5}
+cleared {} true
+first_book 3 has_002 true {"001": 5, "002": 7, "003": 1}
+keys {"001", "002", "003"} vals {5, 7, 1} sum 13
+cut 002 {"001": 5, "002": 0, "003": 1}
+001 -> 5
+002 -> 0
+003 -> 1
+float sum 4.0
+names {"", "bob"} 0

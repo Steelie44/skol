@@ -1,0 +1,12 @@
+[package]
+name = "skol"
+description = "Embed Skol scripts in a Rust application or game"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+skol-syntax = { path = "../skol-syntax" }
+skol-ir = { path = "../skol-ir" }
+skol-sema = { path = "../skol-sema" }
+skol-stdlib = { path = "../skol-stdlib" }
+skol-vm = { path = "../skol-vm" }

@@ -1,0 +1,32 @@
+# Game logic in Skol, driven by the Rust host in ../game_loop.rs.
+# The host provides the `game` module; this script can call nothing else
+# outside the language itself.
+
+from game use spawn, draw_text, key_down
+
+comp Mover {
+    pos: vec2 = {0.0, 0.0}
+    vel: vec2 = {0.0, 0.0}
+    fn step(dt: f) { self.pos += self.vel * dt }
+}
+
+class Player:(Mover) {
+    score: i = 0
+}
+
+var player: Player = Player()
+var enemies: i = 0
+
+fn update(dt: f) {
+    var dir: vec2 = {0.0, 0.0}
+    if key_down("left") { dir.x -= 1.0 }
+    if key_down("right") { dir.x += 1.0 }
+    player.vel = dir * 120.0
+    player.step(dt)
+
+    if player.pos.x > 50.0 and enemies < 3 {
+        enemies += 1
+        player.score += spawn("slime", player.pos + {30.0, 0.0})
+    }
+    draw_text("score " + str(player.score), {4.0, 4.0})
+}

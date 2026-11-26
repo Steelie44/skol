@@ -1,0 +1,53 @@
+# 1000 entities x 1000 frames: method calls, vector math, field writes.
+from math use time
+
+comp Transform {
+    pos: vec2 = {0.0, 0.0}
+    vel: vec2 = {0.0, 0.0}
+
+    fn integrate(dt: f) {
+        self.pos += self.vel * dt
+        if self.pos.x > 100.0 or self.pos.x < 0.0 { self.vel.x = -self.vel.x }
+        if self.pos.y > 100.0 or self.pos.y < 0.0 { self.vel.y = -self.vel.y }
+    }
+}
+
+comp Health {
+    hp: i = 100
+    fn damage(amount: i) {
+        self.hp -= amount
+        if self.hp <= 0 { self.hp = 100 }
+    }
+}
+
+class Enemy:(Transform, Health) {
+    fn init(id: i) {
+        self.pos = {float(id % 100), float(id / 100)}
+        self.vel = {1.0 + float(id % 7) * 0.1, 0.5 + float(id % 5) * 0.1}
+    }
+}
+
+fn update(enemies: T1024[Enemy], player: vec2, dt: f) -> i {
+    var hits: i = 0
+    for e in enemies {
+        e.integrate(dt)
+        if e.pos.distance(player) < 10.0 {
+            e.damage(1)
+            hits += 1
+        }
+    }
+    return hits
+}
+
+fn main() {
+    var enemies: T1024[Enemy] = {}
+    for k in range(1000) { enemies.edit(push, Enemy(k)) }
+    var total: i = 0
+    var player: vec2 = {50.0, 50.0}
+    var t0: f = time()
+    for frame in range(1000) {
+        player.x = 50.0 + float(frame % 20)
+        total += update(enemies, player, 0.5)
+    }
+    print("RESULT", total, time() - t0)
+}

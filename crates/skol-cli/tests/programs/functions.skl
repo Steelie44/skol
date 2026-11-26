@@ -1,0 +1,71 @@
+# Functions, lambdas, closures, recursion, loops, strings, math, imports
+
+from math use pi, floor, max, clamp, mod, abs
+from Shapes use Circle, hypot, Named, created
+
+fn fib(n: i) -> i {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+signal tick(x)
+signal report()
+
+fn main() {
+    print("fib(20) =", fib(20))
+
+    # lambdas, := bindings, recursion through a local
+    const square := lambda(x: i) -> i { return x * x }
+    const fact := lambda(n: i) -> i {
+        if n <= 1 { return 1 }
+        return n * fact(n - 1)
+    }
+    print("square", square(7), "fact", fact(10))
+
+    # closures share captured variables
+    var count: i = 0
+    const bump := lambda(by: i) -> void { count += by }
+    bump(2)
+    bump(3)
+    print("count", count)
+
+    # each loop iteration captures its own variable
+    for k in range(3) {
+        tick.listen(lambda(x: i) -> void { print("closure", x + k * 10) })
+    }
+    tick(1)
+
+    # nested closures
+    const outer := lambda(a: i) -> i {
+        const inner := lambda(b: i) -> i { return a + b + count }
+        return inner(100)
+    }
+    print("nested", outer(1))
+
+    # bound methods as values
+    var c: Circle = Circle(2.0)
+    report.listen(c.show)
+    report()
+    print("area", c.area(), "label", c.label, "created", created)
+
+    # comp-typed variable
+    var n: Named = c
+    print("named", n.label)
+
+    # loops and strings
+    var word: s = ""
+    for ch in "jet" { word = ch.upper() + word }
+    print("reversed upper", word)
+    var sum: i = 0
+    var k2: i = 0
+    while k2 < 10 { sum += k2 k2 += 1 }
+    print("sum", sum)
+    var msg: s = "  Hello, World  "
+    print(msg.trim().lower(), msg.contains("World"), msg.trim().find("World"), msg.trim().substr(0, 5), "ab".repeat(3))
+
+    # numbers
+    var x: f = 7          # i widens to f
+    print(x / 2, 7 / 2, pi > 3.14, floor(2.7), max(3, 9), clamp(15, 0, 10), mod(-7, 3), abs(-4.5))
+    print(int("42") + 1, float("2.5") * 2, str(3.0), int(9.99), hypot(3.0, 4.0))
+    print(1 == 1.0, "a" < "b", not (1 > 2) and true)
+}

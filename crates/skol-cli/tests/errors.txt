@@ -1,0 +1,189 @@
+# Each case starts with "=== <expected message substring>". The case source
+# follows. Every case must fail (compile or runtime) and its output must
+# contain the expected text, including the line:col where shown.
+
+=== 2:1: error: can't assign to 'x': it is a constant
+const x: i = 1
+x = 2
+
+=== argument 1 of add(): expected i, found s
+fn add(a: i, b: i) -> i { return a + b }
+var r: i = add("1", 2)
+
+=== table literal has 3 items but T2[i] holds at most 2
+var t: T2[i] = {1, 2, 3}
+
+=== .edit(push, ...) only works on list tables; T4[s, i] is a key/value table; use .pos(set, key, value) to add entries
+var m: T4[s, i] = {}
+m.edit(push, 1)
+
+=== .iter(even, ...) needs a T[i] list table, found T4[f]
+var t: T4[f] = {1.0}
+var e: T4[i] = t.iter(even)
+
+=== unknown operation 'push' for .iter(...); expected one of len, sum, even, cut ('push' belongs to .edit(...))
+var t: T4[i] = {}
+t.iter(push, 1)
+
+=== .pos(get, ...) expects 1 argument, got 0
+var t: T4[i] = {1}
+var x: i = t.pos(get)
+
+=== initializer of 'b': expected bool, found i
+var t: T4[i] = {1}
+var b: bool = t.iter(len)
+
+=== function 'g' doesn't return a value on every path
+fn g(x: i) -> i {
+    if x > 0 { return 1 }
+}
+
+=== undefined name 'nope'
+print(nope)
+
+=== field 'hp' is defined by both A and B
+comp A { hp: i = 1 }
+comp B { hp: i = 2 }
+class C:(A, B) { }
+
+=== signal 'hit' passes 2 arguments but this handler takes 1
+signal hit(a, b)
+hit.listen(lambda(x: i) -> void { pass })
+
+=== component 'A' can't be created on its own
+comp A { hp: i = 1 }
+var a: i = A()
+
+=== '+' can't be applied to s and i
+var s1: s = "a" + 1
+
+=== if condition: expected bool, found i
+if 1 { pass }
+
+=== can't assign to 'p'.x: it is a constant
+const p: vec2 = {1.0, 2.0}
+p.x = 3.0
+
+=== a table literal needs a known type here
+for x in {1, 2, 3} { print(x) }
+
+=== Enemy has no field or method 'mana'
+class Enemy { hp: i = 1 }
+var e: Enemy = Enemy()
+print(e.mana)
+
+=== method 'alive' overrides H.alive with a different signature
+comp H { fn alive() -> bool { return true } }
+class E:(H) { fn alive() -> i { return 1 } }
+
+=== can't find module 'Missing'
+from Missing use Thing
+
+=== this function returns void, so 'return' can't have a value
+fn g() { return 1 }
+
+=== runtime error: index 5 is out of range for a table of length 2
+var t: T4[i] = {1, 2}
+var x: i = t.pos(get, 5)
+
+=== runtime error: table is full (capacity 2)
+var t: T2[i] = {1, 2}
+t.edit(push, 3)
+
+=== 3:9: runtime error: division by zero
+fn div(a: i, b: i) -> i {
+    var q: i = 0
+    q = a / b
+    return q
+}
+print(div(1, 0))
+
+=== runtime error: stack overflow
+fn down(n: i) -> i { return down(n + 1) }
+print(down(0))
+
+=== runtime error: assertion failed: math is broken
+assert(1 + 1 == 3, "math is broken")
+
+=== runtime error: key "zz" not found
+var m: T4[s, i] = {"a": 1}
+print(m.pos(get, "zz"))
+
+=== runtime error: can't pop from an empty table
+var t: T4[s] = {}
+var x: s = t.edit(pop)
+
+=== in inner
+fn inner() { error("boom") }
+fn outer() { inner() }
+outer()
+
+=== runtime error: integer overflow in *
+var big: i = 9000000000000000000
+print(big * 10)
+
+=== 1:1: error: 'break' can only be used inside a loop
+break
+
+=== error: 'continue' can only be used inside a loop
+for k in range(3) {
+    const g := lambda() -> void { continue }
+}
+
+=== 1:12: error: '%' can't be applied to s and i
+var m: i = "a" % 2
+
+=== runtime error: modulo by zero
+var z: i = 0
+print(5 % z)
+
+=== error: values of type bool can't be indexed
+var b: bool = true
+print(b[0])
+
+=== 2:9: error: list index: expected i, found s
+var t: T4[i] = {1}
+print(t["x"])
+
+=== strings can't be changed in place
+var w: s = "abc"
+w[0] = "z"
+
+=== split needs to know how many pieces to allow
+for p in "a,b".split(",") { print(p) }
+
+=== runtime error: split produced 3 pieces but the table holds at most 2
+var parts: T2[s] = "a,b,c".split(",")
+
+=== runtime error: index 9 is out of range for a string of length 3
+print("abc"[9])
+
+=== argument 1 of apply(): expected fn(i) -> i, found fn(s) -> i
+fn apply(op: fn(i) -> i) -> i { return op(1) }
+fn bad(x: s) -> i { return 0 }
+print(apply(bad))
+
+=== module 'io' has no 'delete_everything'
+from io use delete_everything
+
+=== runtime error: couldn't read "definitely/not/here.txt"
+from io use read_file
+print(read_file("definitely/not/here.txt"))
+
+=== 2:16: runtime error: index 5 is out of range for a table of length 1
+var t: T4[i] = {1}
+var x: i = 1 + t[5]
+
+=== code is nested too deeply
+print(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+
+=== runtime error: signals or default values nested too deeply
+signal e(n)
+e.listen(lambda(n: i) -> void { e(n + 1) })
+e(0)
+
+=== runtime error: repeat would build a string of
+print("ab".repeat(9000000000000))
+
+=== too many parameters
+fn g(a0: i, a1: i, a2: i, a3: i, a4: i, a5: i, a6: i, a7: i, a8: i, a9: i, a10: i, a11: i, a12: i, a13: i, a14: i, a15: i, a16: i, a17: i, a18: i, a19: i, a20: i, a21: i, a22: i, a23: i, a24: i, a25: i, a26: i, a27: i, a28: i, a29: i, a30: i, a31: i, a32: i, a33: i, a34: i, a35: i, a36: i, a37: i, a38: i, a39: i, a40: i, a41: i, a42: i, a43: i, a44: i, a45: i, a46: i, a47: i, a48: i, a49: i, a50: i, a51: i, a52: i, a53: i, a54: i, a55: i, a56: i, a57: i, a58: i, a59: i, a60: i, a61: i, a62: i, a63: i, a64: i, a65: i, a66: i, a67: i, a68: i, a69: i, a70: i, a71: i, a72: i, a73: i, a74: i, a75: i, a76: i, a77: i, a78: i, a79: i, a80: i, a81: i, a82: i, a83: i, a84: i, a85: i, a86: i, a87: i, a88: i, a89: i, a90: i, a91: i, a92: i, a93: i, a94: i, a95: i, a96: i, a97: i, a98: i, a99: i, a100: i, a101: i, a102: i, a103: i, a104: i, a105: i, a106: i, a107: i, a108: i, a109: i, a110: i, a111: i, a112: i, a113: i, a114: i, a115: i, a116: i, a117: i, a118: i, a119: i, a120: i, a121: i, a122: i, a123: i, a124: i, a125: i, a126: i, a127: i, a128: i, a129: i, a130: i, a131: i, a132: i, a133: i, a134: i, a135: i, a136: i, a137: i, a138: i, a139: i, a140: i, a141: i, a142: i, a143: i, a144: i, a145: i, a146: i, a147: i, a148: i, a149: i, a150: i, a151: i, a152: i, a153: i, a154: i, a155: i, a156: i, a157: i, a158: i, a159: i, a160: i, a161: i, a162: i, a163: i, a164: i, a165: i, a166: i, a167: i, a168: i, a169: i, a170: i, a171: i, a172: i, a173: i, a174: i, a175: i, a176: i, a177: i, a178: i, a179: i, a180: i, a181: i, a182: i, a183: i, a184: i, a185: i, a186: i, a187: i, a188: i, a189: i, a190: i, a191: i, a192: i, a193: i, a194: i, a195: i, a196: i, a197: i, a198: i, a199: i, a200: i, a201: i, a202: i, a203: i, a204: i, a205: i, a206: i, a207: i, a208: i, a209: i, a210: i, a211: i, a212: i, a213: i, a214: i, a215: i, a216: i, a217: i, a218: i, a219: i, a220: i, a221: i, a222: i, a223: i, a224: i, a225: i, a226: i, a227: i, a228: i, a229: i, a230: i, a231: i, a232: i, a233: i, a234: i, a235: i, a236: i, a237: i, a238: i, a239: i, a240: i, a241: i, a242: i, a243: i, a244: i, a245: i, a246: i, a247: i, a248: i, a249: i, a250: i, a251: i, a252: i, a253: i, a254: i, a255: i) { pass }

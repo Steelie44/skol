@@ -1,0 +1,8 @@
+[package]
+name = "skol-ir"
+description = "Typed intermediate representation shared by the Skol VM and future AOT backends"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+skol-syntax = { path = "../skol-syntax" }

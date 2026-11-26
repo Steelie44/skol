@@ -1,0 +1,52 @@
+# Table dispatchers: .iter, .pos, .edit, .view
+
+var nums: T8[i] = {1, 2, 3, 4, 5}
+
+# .iter(...)
+var length: i = nums.iter(len)
+var total: i = nums.iter(sum)
+print("len", length, "sum", total)
+var evens: T8[i] = nums.iter(even)
+print("even", evens, "original", nums)
+nums.iter(cut, 2)
+print("after cut", nums, "len", nums.iter(len))
+
+# .edit(...)
+nums.edit(push, 6)
+var last: i = nums.edit(pop)
+print("popped", last, nums)
+nums.edit(push, 7)
+print("pushed", nums)
+
+# .pos(...) on a list
+var first: i = nums.pos(get, 0)
+nums.pos(set, 0, 100)
+var has_9: bool = nums.pos(has, 9)
+print("first", first, "now", nums.pos(get, 0), "has 9:", has_9)
+
+# .view(...)
+var empty_check: bool = nums.view(is_empty)
+print("empty?", empty_check, "keys", nums.view(keys))
+nums.edit(clear)
+print("cleared", nums, nums.view(is_empty))
+
+# key/value tables
+var books: T16[s, i] = {"001": 3, "002": 7}
+var first_book: i = books.pos(get, "001")
+books.pos(set, "001", 5)
+books.pos(set, "003", 1)
+var has_002: bool = books.pos(has, "002")
+print("first_book", first_book, "has_002", has_002, books)
+print("keys", books.view(keys), "vals", books.view(vals), "sum", books.iter(sum))
+books.iter(cut, "002")
+print("cut 002", books)
+for k in books {
+    print(k, "->", books.pos(get, k))
+}
+
+# floats and strings
+var temps: T4[f] = {1.5, 2.5}
+print("float sum", temps.iter(sum))
+var names: T4[s] = {"ada", "bob"}
+names.iter(cut, 0)
+print("names", names, names.pos(get, 0).len())

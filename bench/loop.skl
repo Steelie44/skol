@@ -1,0 +1,12 @@
+from math use time
+
+fn main() {
+    var t0: f = time()
+    var acc: i = 0
+    var n: i = 0
+    while n < 10000000 {
+        acc += n * 2 - 1
+        n += 1
+    }
+    print("RESULT", acc, time() - t0)
+}

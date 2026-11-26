@@ -1,0 +1,9 @@
+[package]
+name = "skol-vm"
+description = "Skol bytecode compiler and virtual machine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+skol-ir = { path = "../skol-ir" }
+skol-stdlib = { path = "../skol-stdlib" }

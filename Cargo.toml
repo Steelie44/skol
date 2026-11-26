@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/skol-syntax",
+    "crates/skol-ir",
+    "crates/skol-sema",
+    "crates/skol-stdlib",
+    "crates/skol-vm",
+    "crates/skol-cli",
+    "crates/skol",
+]
+default-members = ["crates/skol-cli", "crates/skol"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

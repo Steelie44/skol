@@ -1,0 +1,36 @@
+var store: T4[i] = {1, 2, 3}
+fn get() -> T4[i] { return store }
+get()[0] = 99
+print(store)
+
+fn compose(g: fn(i) -> i, h: fn(i) -> i) -> fn(i) -> i {
+    return lambda(x: i) -> i { return h(g(x)) }
+}
+fn inc(x: i) -> i { return x + 1 }
+fn dbl(x: i) -> i { return x * 2 }
+const both: fn(i) -> i = compose(inc, dbl)
+print(both(5))
+
+fn run_with(cb: fn(fn(i) -> i) -> i) -> i { return cb(dbl) }
+print(run_with(lambda(op: fn(i) -> i) -> i { return op(21) }))
+
+var logger: fn(s) = lambda(m: s) -> void { print("log:", m) }
+logger("hi")
+
+var k: i = 0
+var total: i = 0
+while k < 10 {
+    k += 1
+    if k % 3 == 0 { continue }
+    total += k
+}
+print(total)
+
+var grid: T4[T4[i]] = {{1, 2}, {3, 4}}
+grid[1][0] = 30
+grid[0][1] += 5
+print(grid, grid[1][0])
+
+var m: T4[s, vec2] = {"p": {1.0, 1.0}}
+m["p"].x += 2.5
+print(m)

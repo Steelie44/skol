@@ -1,0 +1,12 @@
+# Run with:  skol test_mathx.skl   (prints "all Mathx tests passed" or stops at the failing assert)
+from Mathx use sign, approach, remap, round_to
+
+assert(sign(5.0) == 1.0, "sign of positive")
+assert(sign(-2.0) == -1.0, "sign of negative")
+assert(sign(0.0) == 0.0, "sign of zero")
+assert(approach(0.0, 10.0, 3.0) == 3.0, "approach steps up")
+assert(approach(9.0, 10.0, 3.0) == 10.0, "approach doesn't overshoot")
+assert(approach(10.0, 0.0, 4.0) == 6.0, "approach steps down")
+assert(remap(5.0, 0.0, 10.0, 0.0, 100.0) == 50.0, "remap midpoint")
+assert(round_to(3.14159, 2) == 3.14, "round_to two places")
+print("all Mathx tests passed")

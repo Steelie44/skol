@@ -1,0 +1,8 @@
+orc (30/30) true
+orc (8/30) true
+pos vec2(3.0, 4.0) x 3.0
+pos after vec2(3.0, 9.5)
+crate alive? true hp 0
+{"something with max 100 died of damage", "something with max 30 died of damage"} total damage 572
+Enemy{max_health: 30, current_health: 0, pos: vec2(3.0, 9.5), speed: 2.5, name: "orc", loot: {"coin"}}
+Enemy T4[s] vec2

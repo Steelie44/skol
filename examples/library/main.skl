@@ -1,0 +1,36 @@
+from Mathx use approach, remap, round_to, sign
+from Timers use Cooldown, Timer, timer_done
+
+class Gun:(Cooldown) {
+    cooldown: f = 0.5        # fire at most twice per second
+    shots: i = 0
+
+    fn try_fire() {
+        if self.trigger() { self.shots += 1 }
+    }
+}
+
+fn main() {
+    print("sign", sign(-3.0), "approach", approach(0.0, 10.0, 3.0), approach(9.0, 10.0, 3.0))
+    print("remap 5 from 0..10 to 0..100:", remap(5.0, 0.0, 10.0, 0.0, 100.0))
+    print("round_to:", round_to(3.14159, 2))
+
+    var gun: Gun = Gun()
+    var spawner: Timer = Timer("spawn wave", 1.0, true)
+    var waves: i = 0
+    timer_done.listen(lambda(name: s) -> void {
+        waves += 1
+        print("timer done:", name)
+    })
+    spawner.start()
+
+    # Simulate 3 seconds at 8 frames per second, holding the fire button.
+    # (0.125 adds up exactly in binary; 0.1 does not, so timers would fire a frame late.)
+    var dt: f = 0.125
+    for frame in range(24) {
+        gun.tick_cooldown(dt)
+        gun.try_fire()
+        spawner.tick(dt)
+    }
+    print("shots fired:", gun.shots, "waves:", waves)
+}

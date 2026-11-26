@@ -1,0 +1,15 @@
+2 2 1.5
+odds {1, 3, 5, 7, 9}
+stopped at 5
+pairs 10
+nums {10, 25, 35} 35
+stock {"apple": 2, "pear": 7} 7
+chars s l
+points {vec2(1.0, 2.0), vec2(3.0, 9.0)}
+labels ok cancel
+apply 42 101
+ops {10, 8, 25}
+default click by ada
+custom click by linus
+parts {"a", "b", "", "c"} 4
+file true {"line one", "line two"}

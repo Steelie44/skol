@@ -1,0 +1,80 @@
+# Classes, components, self, constructors, comp-typed parameters
+
+signal died(entity, cause)
+signal damaged(amount)
+
+comp Health {
+    max_health: i = 100
+    current_health: i = 100
+
+    fn take_damage(amount: i) {
+        self.current_health -= amount
+        damaged.emit(amount)
+        if self.current_health <= 0 {
+            self.current_health = 0
+            died.emit(self, "damage")
+        }
+    }
+
+    fn alive() -> bool { return self.current_health > 0 }
+}
+
+comp Movement {
+    pos: vec2 = {0.0, 0.0}
+    speed: f = 1.0
+
+    fn move_by(dir: vec2, dt: f) {
+        self.pos += dir.normalized() * self.speed * dt
+    }
+}
+
+class Enemy:(Health, Movement) {
+    name: s = "grunt"
+    speed: f = 2.5          # overrides Movement's default
+    loot: T4[s] = {"coin"}
+
+    fn init(name: s, hp: i) {
+        self.name = name
+        self.max_health = hp
+        self.current_health = hp
+    }
+
+    fn describe() -> s {
+        return self.name + " (" + str(self.current_health) + "/" + str(self.max_health) + ")"
+    }
+}
+
+class Crate:(Health) {
+    fn alive() -> bool { return true }   # overrides Health.alive
+}
+
+fn hurt(target: Health, amount: i) {
+    target.take_damage(amount)
+}
+
+fn main() {
+    var log: T16[s] = {}
+    died.listen(lambda(who: Health, cause: s) -> void {
+        log.edit(push, "something with max " + str(who.max_health) + " died of " + cause)
+    })
+    var total_damage: i = 0
+    damaged.listen(lambda(amount: i) -> void { total_damage += amount })
+
+    var e: Enemy = Enemy("orc", 30)
+    print(e.describe(), e.alive())
+    hurt(e, 12)
+    e.take_damage(10)
+    print(e.describe(), e.alive())
+    e.move_by({3.0, 4.0}, 2.0)
+    print("pos", e.pos, "x", e.pos.x)
+    e.pos.y = 9.5
+    print("pos after", e.pos)
+
+    var c: Crate = Crate()
+    hurt(c, 500)
+    print("crate alive?", c.alive(), "hp", c.current_health)
+    hurt(e, 50)
+    print(log, "total damage", total_damage)
+    print(e)
+    print(type_of(e), type_of(e.loot), type_of(e.pos))
+}

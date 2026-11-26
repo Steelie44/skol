@@ -1,0 +1,13 @@
+# Hello, Skol. Run with:  skol examples/hello.skl
+
+const greeting: s = "Hello"
+var scores: T8[i] = {3, 8, 5}
+
+fn shout(text: s) -> s { return text.upper() + "!" }
+
+fn main() {
+    print(shout(greeting + ", Skol"))
+    scores.edit(push, 10)
+    var total: i = scores.iter(sum)
+    print("scores", scores, "total", total, "even", scores.iter(even))
+}

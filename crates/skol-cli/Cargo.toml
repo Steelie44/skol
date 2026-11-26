@@ -1,0 +1,16 @@
+[package]
+name = "skol-cli"
+description = "The `skol` command: run, check, REPL"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "skol"
+path = "src/main.rs"
+
+[dependencies]
+skol-syntax = { path = "../skol-syntax" }
+skol-ir = { path = "../skol-ir" }
+skol-sema = { path = "../skol-sema" }
+skol-stdlib = { path = "../skol-stdlib" }
+skol-vm = { path = "../skol-vm" }

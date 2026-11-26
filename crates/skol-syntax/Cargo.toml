@@ -1,0 +1,7 @@
+[package]
+name = "skol-syntax"
+description = "Skol lexer, parser and AST"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

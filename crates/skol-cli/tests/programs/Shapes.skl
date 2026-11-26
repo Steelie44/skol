@@ -1,0 +1,22 @@
+# Imported by functions.skl
+from math use sqrt
+
+const UNIT: f = 1.0
+var created: i = 0
+
+comp Named {
+    label: s = "?"
+}
+
+class Circle:(Named) {
+    radius: f = UNIT
+    fn init(r: f) {
+        self.radius = r
+        self.label = "circle"
+        created += 1
+    }
+    fn area() -> f { return 3.0 * self.radius * self.radius }
+    fn show() { print("circle of radius", self.radius) }
+}
+
+fn hypot(a: f, b: f) -> f { return sqrt(a * a + b * b) }

@@ -1,0 +1,103 @@
+# Game-style benchmark: what a frame update loop in a Skol game looks like.
+# Run with:  skol examples/bench_game.skl     (use the release build)
+
+from math use time, sqrt
+
+signal hit(who, amount)
+
+comp Transform {
+    pos: vec2 = {0.0, 0.0}
+    vel: vec2 = {1.0, 0.5}
+
+    fn integrate(dt: f) {
+        self.pos += self.vel * dt
+        if self.pos.x > 100.0 or self.pos.x < 0.0 { self.vel.x = -self.vel.x }
+        if self.pos.y > 100.0 or self.pos.y < 0.0 { self.vel.y = -self.vel.y }
+    }
+}
+
+comp Health {
+    hp: i = 100
+    fn damage(amount: i) {
+        self.hp -= amount
+        if self.hp <= 0 { self.hp = 100 }
+    }
+}
+
+class Enemy:(Transform, Health) {
+    id: i = 0
+    fn init(id: i) {
+        self.id = id
+        self.pos = {float(id % 100), float(id / 100)}
+        self.vel = {1.0 + float(id % 7) * 0.1, 0.5 + float(id % 5) * 0.1}
+    }
+}
+
+const ENEMIES: i = 1000
+const FRAMES: i = 1000
+
+fn update(enemies: T1024[Enemy], player: vec2, dt: f) -> i {
+    var hits: i = 0
+    for e in enemies {
+        e.integrate(dt)
+        var d: f = e.pos.distance(player)
+        if d < 10.0 {
+            e.damage(1)
+            hits += 1
+        }
+    }
+    return hits
+}
+
+fn main() {
+    var enemies: T1024[Enemy] = {}
+    for k in range(ENEMIES) { enemies.edit(push, Enemy(k)) }
+
+    var total_hits: i = 0
+    var player: vec2 = {50.0, 50.0}
+    var t0: f = time()
+    for frame in range(FRAMES) {
+        player.x = 50.0 + float(frame % 20)
+        total_hits += update(enemies, player, 0.5)
+    }
+    print("entity updates: 1M method-heavy updates, hits =", total_hits, "in", time() - t0, "s")
+
+    # signals fired from gameplay code
+    var received: i = 0
+    hit.listen(lambda(who: Enemy, amount: i) -> void { received += amount })
+    t0 = time()
+    for frame in range(200) {
+        for k in range(ENEMIES) {
+            if k % 10 == 0 { hit(enemies[k], 1) }
+        }
+    }
+    print("signals: 20K emits, received =", received, "in", time() - t0, "s")
+
+    # table-heavy work: indexing, map lookups
+    var grid: T1024[i] = {}
+    for k in range(1024) { grid.edit(push, 0) }
+    var names: T64[s, i] = {}
+    for k in range(64) { names["e" + str(k)] = k }
+    t0 = time()
+    var acc: i = 0
+    for round in range(2000) {
+        for k in range(1024) {
+            grid[k] = grid[k] + k
+        }
+        acc += names["e" + str(round % 64)]
+    }
+    print("tables: 2M indexed read-modify-writes + 2K map lookups, acc =", acc, "in", time() - t0, "s")
+
+    # vector math
+    t0 = time()
+    var v: vec3 = {0.0, 0.0, 0.0}
+    var step: vec3 = {0.001, 0.002, 0.003}
+    var len_sum: f = 0.0
+    for k in range(1000000) {
+        v += step
+        len_sum += v.length()
+    }
+    print("vectors: 1M vec3 adds + lengths, sum =", floor_str(len_sum), "in", time() - t0, "s")
+}
+
+fn floor_str(x: f) -> s { return str(int(x)) }

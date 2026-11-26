@@ -1,0 +1,89 @@
+# break / continue / %, indexing, function types, split, io
+
+from io use write_file, append_file, read_file, file_exists
+
+# ---- function types in params, returns, fields, tables
+fn apply(op: fn(i) -> i, x: i) -> i { return op(x) }
+
+fn make_adder(n: i) -> fn(i) -> i {
+    return lambda(x: i) -> i { return x + n }
+}
+
+fn twice(x: i) -> i { return x * 2 }
+
+class Button {
+    label: s = "ok"
+    on_click: fn(s) -> void = lambda(who: s) -> void { print("default click by", who) }
+}
+
+fn main() {
+    # % on ints and floats (Euclidean, like math.mod)
+    print(17 % 5, -7 % 3, 7.5 % 2.0)
+
+    # break and continue
+    var odds: T16[i] = {}
+    for k in range(100) {
+        if k % 2 == 0 { continue }
+        if k > 9 { break }
+        odds.edit(push, k)
+    }
+    print("odds", odds)
+    var n: i = 0
+    while true {
+        n += 1
+        if n == 5 { break }
+    }
+    print("stopped at", n)
+
+    # nested loops: break only leaves the inner one
+    var pairs: i = 0
+    for a in range(4) {
+        for b in range(4) {
+            if b > a { break }
+            pairs += 1
+        }
+    }
+    print("pairs", pairs)
+
+    # indexing: read, write, compound, map keys, strings, nested fields
+    var nums: T8[i] = {10, 20, 30}
+    nums[1] = 25
+    nums[2] += 5
+    print("nums", nums, nums[0] + nums[1])
+    var stock: T8[s, i] = {"apple": 3}
+    stock["pear"] = 7
+    stock["apple"] -= 1
+    print("stock", stock, stock["pear"])
+    var word: s = "skol"
+    print("chars", word[0], word[3])
+    var points: T4[vec2] = {{1.0, 2.0}, {3.0, 4.0}}
+    points[1].y = 9.0
+    print("points", points)
+    var buttons: T4[Button] = {Button(), Button()}
+    buttons[1].label = "cancel"
+    print("labels", buttons[0].label, buttons[1].label)
+
+    # function values everywhere
+    print("apply", apply(twice, 21), apply(make_adder(100), 1))
+    var ops: T4[fn(i) -> i] = {twice, make_adder(3)}
+    ops.edit(push, lambda(x: i) -> i { return x * x })
+    var results: T4[i] = {}
+    for op in ops { results.edit(push, op(5)) }
+    print("ops", results)
+    var b: Button = Button()
+    b.on_click("ada")
+    b.on_click = lambda(who: s) -> void { print("custom click by", who) }
+    b.on_click("linus")
+
+    # split, typed by its destination
+    var parts: T8[s] = "a,b,,c".split(",")
+    print("parts", parts, parts.iter(len))
+
+    # files
+    const path: s = "skl_test_output.txt"
+    write_file(path, "line one\n")
+    append_file(path, "line two\n")
+    var lines: T4[s] = read_file(path).trim().split("\n")
+    print("file", file_exists(path), lines)
+    write_file(path, "")
+}

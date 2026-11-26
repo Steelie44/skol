@@ -1,0 +1,12 @@
+from math use time
+
+fn fib(n: i) -> i {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    var t0: f = time()
+    var r: i = fib(30)
+    print("RESULT", r, time() - t0)
+}
