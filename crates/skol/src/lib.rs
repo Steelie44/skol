@@ -25,7 +25,7 @@ mod convert;
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
 
-pub use convert::{HostReturn, IntoArgs, IntoHostFn, SkolType, Vec2, Vec3, Vec4};
+pub use convert::{Dyn, HostReturn, IntoArgs, IntoHostFn, SkolType, Vec2, Vec3, Vec4};
 pub use skol_ir::Type;
 pub use skol_sema::{Diagnostic, FsLoader, ModuleLoader};
 pub use skol_vm::{Limits, RuntimeError};
@@ -293,4 +293,65 @@ impl Engine {
         self.vm()?.set_global(id, value.into_value());
         Ok(())
     }
+
+    // ---- dynamic access, for hosts whose types are only known at run time
+    // (Godot's Variant, a debug console, a scripting bridge)
+
+    /// Parameter and return types of a top-level function, or `None`.
+    pub fn function_types(&self, name: &str) -> Option<(Vec<Type>, Type)> {
+        self.checker.entry_function(name).map(|(_, p, r)| (p, r))
+    }
+
+    /// Call a top-level function with arguments whose types are checked at
+    /// run time. An `Int` is accepted where an `f` is expected.
+    pub fn call_dynamic(&mut self, name: &str, args: &[Dyn]) -> Result<Dyn, Error> {
+        let Some((id, params, _ret)) = self.checker.entry_function(name) else {
+            return Err(Error::Api(format!("the script has no function '{name}'")));
+        };
+        if params.len() != args.len() {
+            return Err(Error::Api(format!("{name} takes {} argument{}, got {}", params.len(), if params.len() == 1 { "" } else { "s" }, args.len())));
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for (i, (a, t)) in args.iter().zip(params.iter()).enumerate() {
+            match a.to_value(t) {
+                Some(v) => values.push(v),
+                None => {
+                    let prog = self.checker.program();
+                    return Err(Error::Api(format!("argument {} of {name} must be {}, got {}", i + 1, prog.type_name(t), a.type_name())));
+                }
+            }
+        }
+        guard(|| {
+            let v = self.vm()?.call(id, values).map_err(runtime)?;
+            Dyn::from_value(&v).ok_or_else(|| Error::Api(format!("{name} returned a value that can't leave the script (tables and objects aren't supported yet)")))
+        })
+    }
+
+    /// Read a top-level variable as a dynamic value.
+    pub fn get_dynamic(&mut self, name: &str) -> Result<Dyn, Error> {
+        let Some((id, _)) = self.checker.entry_global(name) else {
+            return Err(Error::Api(format!("the script has no variable '{name}'")));
+        };
+        let v = self.vm()?.global(id).cloned().unwrap_or(skol_stdlib::Value::Void);
+        Dyn::from_value(&v).ok_or_else(|| Error::Api(format!("'{name}' can't leave the script (tables and objects aren't supported yet)")))
+    }
+
+    /// Change a top-level `var` from a dynamic value (types checked).
+    pub fn set_dynamic(&mut self, name: &str, value: &Dyn) -> Result<(), Error> {
+        let Some((id, ty)) = self.checker.entry_global(name) else {
+            return Err(Error::Api(format!("the script has no variable '{name}'")));
+        };
+        let prog = self.checker.program();
+        if !prog.globals[id as usize].mutable {
+            return Err(Error::Api(format!("'{name}' is a constant")));
+        }
+        let Some(v) = value.to_value(&ty) else {
+            return Err(Error::Api(format!("'{name}' has type {}, got {}", prog.type_name(&ty), value.type_name())));
+        };
+        self.vm()?.set_global(id, v);
+        Ok(())
+    }
+
+    /// Does the loaded script define a top-level variable with this name?
+    pub fn has_variable(&self, name: &str) -> bool { self.checker.entry_global(name).is_some() }
 }

@@ -1,0 +1,218 @@
+# A mixed "game frame" workload: AI state machines, vector physics, a
+# spatial-hash collision pass, sorting, event callbacks, UI string building
+# and parsing, string-keyed inventory counts, and BFS pathfinding.
+from math use sqrt, min, time
+
+const N: i = 500
+const FRAMES: i = 1000
+const WORLD: f = 512.0
+const CELL: i = 32
+const GRID: i = 16
+
+var seed: i = 12345
+
+fn rnd(n: i) -> i {
+    seed = (seed * 75 + 74) % 65537
+    return seed % n
+}
+
+comp Body {
+    x: f = 0.0
+    y: f = 0.0
+    vx: f = 0.0
+    vy: f = 0.0
+
+    fn integrate() {
+        self.x += self.vx
+        self.y += self.vy
+        if self.x < 0.0 {
+            self.x = 0.0
+            self.vx = -self.vx
+        } else if self.x > WORLD - 1.0 {
+            self.x = WORLD - 1.0
+            self.vx = -self.vx
+        }
+        if self.y < 0.0 {
+            self.y = 0.0
+            self.vy = -self.vy
+        } else if self.y > WORLD - 1.0 {
+            self.y = WORLD - 1.0
+            self.vy = -self.vy
+        }
+    }
+}
+
+class Entity:(Body) {
+    id: i = 0
+    hp: i = 0
+    state: i = 0
+
+    fn init(id: i) {
+        self.id = id
+        self.x = float(rnd(512))
+        self.y = float(rnd(512))
+        self.vx = float(rnd(5)) - 2.0
+        self.vy = float(rnd(5)) - 2.0
+        self.hp = 50 + rnd(50)
+    }
+
+    fn think(px: f, py: f) {
+        var dx: f = px - self.x
+        var dy: f = py - self.y
+        var d2: f = dx * dx + dy * dy
+        if d2 >= 10000.0 {
+            self.state = 0
+        } else if self.hp < 30 {
+            self.state = 2
+        } else {
+            self.state = 1
+        }
+        if self.state != 0 and d2 > 0.0 {
+            var d: f = sqrt(d2)
+            if self.state == 1 {
+                self.vx = dx / d * 2.0
+                self.vy = dy / d * 2.0
+            } else {
+                self.vx = -dx / d * 3.0
+                self.vy = -dy / d * 3.0
+            }
+        }
+    }
+}
+
+fn bfs(walls: T1024[i], size: i) -> i {
+    var dist: T1024[i] = {}
+    for k in range(size * size) { dist.edit(push, -1) }
+    var queue: T1024[i] = {0}
+    dist[0] = 0
+    var head: i = 0
+    const goal: i = size * size - 1
+    var dxs: T4[i] = {1, -1, 0, 0}
+    var dys: T4[i] = {0, 0, 1, -1}
+    while head < queue.iter(len) {
+        var cur: i = queue[head]
+        head += 1
+        if cur == goal { return dist[cur] }
+        var cx: i = cur % size
+        var cy: i = cur / size
+        for k in range(4) {
+            var nx: i = cx + dxs[k]
+            var ny: i = cy + dys[k]
+            if nx >= 0 and nx < size and ny >= 0 and ny < size {
+                var nxt: i = ny * size + nx
+                if walls[nxt] == 0 and dist[nxt] < 0 {
+                    dist[nxt] = dist[cur] + 1
+                    queue.edit(push, nxt)
+                }
+            }
+        }
+    }
+    return -1
+}
+
+var score: i = 0
+var combo: i = 0
+var best_combo: i = 0
+
+fn main() {
+    var entities: T512[Entity] = {}
+    for k in range(N) { entities.edit(push, Entity(k)) }
+    var walls: T1024[i] = {}
+    for k in range(32 * 32) {
+        if rnd(100) < 25 { walls.edit(push, 1) } else { walls.edit(push, 0) }
+    }
+    walls[0] = 0
+    walls[32 * 32 - 1] = 0
+    var listeners: T4[fn(i)] = {
+        lambda(id: i) -> void { score += 10 + id % 3 },
+        lambda(id: i) -> void {
+            combo += 1
+            if combo > best_combo { best_combo = combo }
+        },
+        lambda(id: i) -> void { if id % 50 == 0 { score += 100 } }
+    }
+    var inventory: T32[s, i] = {}
+    var grid: T256[T512[i]] = {}
+    for k in range(GRID * GRID) {
+        var cell: T512[i] = {}
+        grid.edit(push, cell)
+    }
+    var hits: i = 0
+    var kills: i = 0
+    var checksum: i = 0
+
+    var t0: f = time()
+    for frame in range(FRAMES) {
+        var px: f = float(64 + (frame * 37) % 384)
+        var py: f = float(64 + (frame * 23) % 384)
+
+        for e in entities {
+            e.think(px, py)
+            e.integrate()
+        }
+
+        for cell in grid { cell.edit(clear) }
+        for e in entities {
+            var cx: i = min(int(e.x) / CELL, GRID - 1)
+            var cy: i = min(int(e.y) / CELL, GRID - 1)
+            grid[cy * GRID + cx].edit(push, e.id)
+        }
+
+        combo = 0
+        for cell in grid {
+            var n: i = cell.iter(len)
+            for a in range(n) {
+                var ea: Entity = entities[cell[a]]
+                for b in range(a + 1, n) {
+                    var eb: Entity = entities[cell[b]]
+                    var dx: f = ea.x - eb.x
+                    var dy: f = ea.y - eb.y
+                    if dx * dx + dy * dy < 64.0 {
+                        hits += 1
+                        # push the pair apart
+                        ea.x += dx * 0.5
+                        ea.y += dy * 0.5
+                        eb.x -= dx * 0.5
+                        eb.y -= dy * 0.5
+                        var pair: T2[Entity] = {ea, eb}
+                        for e in pair {
+                            e.hp -= 1
+                            if e.hp <= 0 {
+                                e.hp = 100
+                                kills += 1
+                                for cb in listeners { cb(e.id) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if frame % 10 == 0 {
+            var near: T512[Entity] = entities.view(copy)
+            near.edit(sort_by, lambda(e: Entity) -> i {
+                var dx: f = e.x - px
+                var dy: f = e.y - py
+                return int(dx * dx + dy * dy) * 1024 + e.id
+            })
+            for k in range(10) { checksum += near[k].id }
+        }
+
+        if frame % 5 == 0 {
+            var total_hp: i = 0
+            for e in entities { total_hp += e.hp }
+            var line: s = "frame " + str(frame) + " hp " + str(total_hp) + " kills " + str(kills)
+            checksum += line.len()
+            var parts: T8[s] = line.split(" ")
+            checksum += int(parts[1]) + int(parts[3]) % 1000 + int(parts[5])
+        }
+
+        var item: s = "item" + str(rnd(20))
+        if inventory.pos(has, item) { inventory[item] += 1 } else { inventory[item] = 1 }
+
+        if frame % 25 == 0 { checksum += bfs(walls, 32) }
+    }
+
+    checksum += hits + kills * 7 + score + best_combo + inventory.pos(get_or, "item7", 0)
+    print("RESULT", checksum, time() - t0)
+}

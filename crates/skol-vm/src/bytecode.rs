@@ -708,6 +708,33 @@ impl<'a> FnCompiler<'a> {
                 self.emit(match op { UnOp::NegI => Op::NegI(d, a), UnOp::NegF => Op::NegF(d, a), UnOp::NegV => Op::NegV(d, a), UnOp::Not => Op::Not(d, a) });
             }
             ExprKind::Binary(op, l, r) => {
+                // Both sides constant (often after `const` folding): compute now.
+                if let (ExprKind::Float(a), ExprKind::Float(b)) = (&l.kind, &r.kind) {
+                    let v = match op {
+                        BinOp::AddF => Some(a + b), BinOp::SubF => Some(a - b),
+                        BinOp::MulF => Some(a * b), BinOp::DivF => Some(a / b),
+                        _ => None,
+                    };
+                    if let Some(v) = v {
+                        let k = self.bc.add_const(Value::Float(v));
+                        self.emit(Op::LoadK(d, k));
+                        return;
+                    }
+                }
+                if let (ExprKind::Int(a), ExprKind::Int(b)) = (&l.kind, &r.kind) {
+                    let v = match op {
+                        BinOp::AddI => a.checked_add(*b), BinOp::SubI => a.checked_sub(*b),
+                        BinOp::MulI => a.checked_mul(*b),
+                        _ => None,
+                    };
+                    if let Some(v) = v {
+                        match i32::try_from(v) {
+                            Ok(small) => { self.emit(Op::LoadInt(d, small)); }
+                            Err(_) => { let k = self.bc.add_const(Value::Int(v)); self.emit(Op::LoadK(d, k)); }
+                        }
+                        return;
+                    }
+                }
                 if let (BinOp::AddI | BinOp::SubI, Some(k)) = (op, small_int(r)) {
                     let k = if *op == BinOp::SubI { k.checked_neg() } else { Some(k) };
                     if let Some(k) = k {
@@ -871,7 +898,7 @@ pub fn is_fast_builtin(b: Builtin) -> bool {
     use Builtin::*;
     matches!(b, Sqrt | Sin | Cos | Tan | Atan2 | Pow | AbsF | MinF | MaxF
         | VecLength | VecNormalized | VecDot | VecDistance | VecCross
-        | MinI | MaxI | ToStr | StrLen)
+        | MinI | MaxI | ToStr | StrLen | FloatToInt)
 }
 
 fn small_int(e: &ir::Expr) -> Option<i32> {

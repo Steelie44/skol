@@ -162,3 +162,54 @@ impl_into_args!(A, B, C);
 impl_into_args!(A, B, C, D);
 impl_into_args!(A, B, C, D, E);
 impl_into_args!(A, B, C, D, E, G);
+
+/// A value whose Skol type is decided at run time (for `Engine::call_dynamic`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Dyn {
+    Void,
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    Vec2(Vec2),
+    Vec3(Vec3),
+    Vec4(Vec4),
+}
+
+impl Dyn {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Dyn::Void => "void", Dyn::Int(_) => "i", Dyn::Float(_) => "f", Dyn::Bool(_) => "bool",
+            Dyn::Str(_) => "s", Dyn::Vec2(_) => "vec2", Dyn::Vec3(_) => "vec3", Dyn::Vec4(_) => "vec4",
+        }
+    }
+
+    /// Convert to a Skol value of type `ty` (an `Int` widens to `f`).
+    pub(crate) fn to_value(&self, ty: &Type) -> Option<Value> {
+        Some(match (self, ty) {
+            (Dyn::Int(i), Type::Int) => Value::Int(*i),
+            (Dyn::Int(i), Type::Float) => Value::Float(*i as f64),
+            (Dyn::Float(x), Type::Float) => Value::Float(*x),
+            (Dyn::Bool(b), Type::Bool) => Value::Bool(*b),
+            (Dyn::Str(s), Type::Str) => Value::str(s),
+            (Dyn::Vec2(v), Type::Vec(2)) => Value::Vec2(v.x, v.y),
+            (Dyn::Vec3(v), Type::Vec(3)) => Value::vec(VecN { n: 3, c: [v.x, v.y, v.z, 0.0] }),
+            (Dyn::Vec4(v), Type::Vec(4)) => Value::vec(VecN { n: 4, c: [v.x, v.y, v.z, v.w] }),
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn from_value(v: &Value) -> Option<Dyn> {
+        Some(match v {
+            Value::Void => Dyn::Void,
+            Value::Int(i) => Dyn::Int(*i),
+            Value::Float(x) => Dyn::Float(*x),
+            Value::Bool(b) => Dyn::Bool(*b),
+            Value::Str(s) => Dyn::Str(s.to_string()),
+            Value::Vec2(x, y) => Dyn::Vec2(Vec2::new(*x, *y)),
+            Value::Vec(n) if n.n == 3 => Dyn::Vec3(Vec3::new(n.c[0], n.c[1], n.c[2])),
+            Value::Vec(n) if n.n == 4 => Dyn::Vec4(Vec4::new(n.c[0], n.c[1], n.c[2], n.c[3])),
+            _ => return None,
+        })
+    }
+}

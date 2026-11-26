@@ -3,6 +3,7 @@
     python bench/run.py            # from the repository root
     python bench/run.py --runs 5   # more runs per benchmark (best time is kept)
     python bench/run.py --jit      # also show JIT-compiled reference rows
+    python bench/run.py --only game fib   # just these benchmarks
 
 Every benchmark is written idiomatically in each language and prints
 `RESULT <checksum> <seconds>`, timing only the work itself (not start-up).
@@ -37,6 +38,7 @@ BENCHMARKS = [
     ("entities", "1M entity updates", 33262),
     ("tables", "2M indexed writes + map lookups", 2108616),
     ("strings", "200K string builds + counting", 779000),
+    ("game", "1000 game frames: AI, physics, collisions, sorting, events, strings, BFS", 842559),
 ]
 
 
@@ -113,12 +115,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--jit", action="store_true", help="also run JIT-compiled reference configurations")
+    ap.add_argument("--only", nargs="+", metavar="NAME", help="run only these benchmarks (e.g. game fib)")
     args = ap.parse_args()
+    benchmarks = [b for b in BENCHMARKS if not args.only or b[0] in args.only]
+    if not benchmarks:
+        sys.exit("no benchmark matches --only; choose from: " + ", ".join(b[0] for b in BENCHMARKS))
 
     langs = find_languages(args.jit)
     print("Languages:", ", ".join(name for name, _, _ in langs))
     results = {}  # (bench, lang) -> seconds or error string
-    for bench, desc, expected in BENCHMARKS:
+    for bench, desc, expected in benchmarks:
         for name, ext, cmd in langs:
             path = os.path.join(HERE, f"{bench}.{ext}")
             best, err = None, None
@@ -141,7 +147,7 @@ def main():
     header = "| Benchmark | " + " | ".join(names) + " |"
     lines.append(header)
     lines.append("|---|" + "---|" * len(names))
-    for bench, desc, _ in BENCHMARKS:
+    for bench, desc, _ in benchmarks:
         cells = []
         for n in names:
             v = results[(bench, n)]
@@ -153,7 +159,7 @@ def main():
         cells = []
         for n in names:
             ratios = []
-            for bench, _, _ in BENCHMARKS:
+            for bench, _, _ in benchmarks:
                 a, b = results[(bench, n)], results[(bench, "Skol")]
                 if isinstance(a, float) and isinstance(b, float) and b > 0:
                     ratios.append(a / b)

@@ -770,6 +770,13 @@ impl Vm {
                             r.c[2] = p.c[0] * q.c[1] - p.c[1] * q.c[0];
                             reg!(d).set_vec(r);
                         }
+                        B::FloatToInt => {
+                            let x = float!(a);
+                            if !x.is_finite() || x >= 9.2e18 || x <= -9.2e18 {
+                                fail!("{} can't be converted to an i", rt::format::format_float(x))
+                            }
+                            set_int!(d, x as i64);
+                        }
                         B::MinI | B::MaxI => {
                             let (x, y) = (int!(a), int!(b));
                             set_int!(d, if bi == B::MinI { x.min(y) } else { x.max(y) });
@@ -894,6 +901,11 @@ impl Vm {
                         }
                         _ => fail!("internal error: table op on a non-table"),
                     };
+                    tri!(r);
+                }
+                Op::Table(TableOp::Push, _, t, a, _) => {
+                    let v = fast_clone(&reg!(a));
+                    let r = match &reg!(t) { Value::Table(tb) => tb.borrow_mut().push(v), _ => fail!("internal error: table op on a non-table") };
                     tri!(r);
                 }
                 Op::Table(TableOp::Len, d, t, _, _) => {

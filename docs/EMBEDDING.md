@@ -44,3 +44,21 @@ Calling it with wrong argument types is a compile error at load time.
 A runnable example: `cargo run -p skol --example game_loop`.
 
 See [LIBRARY.md](../LIBRARY.md#embedding-what-scripts-may-use) for which library functions are sandboxed.
+
+## Dynamic calls
+
+When the types are only known at run time, use the dynamic API. This is
+what the Godot plugin does with Godot's `Variant`, and it also suits debug
+consoles.
+
+```rust
+use skol::{Dyn, Vec2};
+
+let r = engine.call_dynamic("scale", &[Dyn::Vec2(Vec2::new(1.0, 2.0)), Dyn::Int(2)])?;
+engine.set_dynamic("speed", &Dyn::Float(4.0))?;
+let score = engine.get_dynamic("score")?;               // Dyn::Int(..)
+let (params, ret) = engine.function_types("update").unwrap();
+```
+
+Argument types are checked when you call. An `Int` is accepted where the
+script expects an `f`.

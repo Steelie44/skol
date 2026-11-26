@@ -134,7 +134,6 @@ impl Table {
 
     pub fn is_empty(&self) -> bool { self.len() == 0 }
 
-    fn full_error(&self) -> String { format!("table is full (capacity {})", self.cap) }
 
     fn index(&self, k: &Value) -> Result<usize, String> {
         let i = match k { Value::Int(i) => *i, _ => return Err("list index must be an i".into()) };
@@ -231,10 +230,13 @@ impl Table {
     // ---- .edit(...)
 
     pub fn push(&mut self, value: Value) -> Result<(), String> {
-        let full = self.len() >= self.cap;
-        let err = self.full_error();
+        let cap = self.cap;
         match &mut self.data {
-            TableData::List(v) => { if full { return Err(err); } v.push(value); Ok(()) }
+            TableData::List(v) => {
+                if v.len() >= cap { return Err(format!("table is full (capacity {cap})")); }
+                v.push(value);
+                Ok(())
+            }
             TableData::Map { .. } => Err("push only works on list tables".into()),
         }
     }

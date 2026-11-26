@@ -196,3 +196,23 @@ fn library_paths_are_searched_after_the_script_folder() {
         other => panic!("expected a compile error, got {other:?}"),
     }
 }
+
+#[test]
+fn dynamic_calls_check_types_at_run_time() {
+    use skol::Dyn;
+    let mut engine = Engine::new();
+    engine.load_source("main.skl", r#"
+        var speed: f = 1.5
+        const MAX: i = 3
+        fn scale(v: vec2, k: f) -> vec2 { return v * k }
+        fn greet(name: s, times: i) -> s { return name.repeat(times) }
+    "#).unwrap();
+    assert_eq!(engine.call_dynamic("scale", &[Dyn::Vec2(Vec2::new(1.0, 2.0)), Dyn::Int(2)]).unwrap(), Dyn::Vec2(Vec2::new(2.0, 4.0)));
+    assert_eq!(engine.call_dynamic("greet", &[Dyn::Str("ab".into()), Dyn::Int(2)]).unwrap(), Dyn::Str("abab".into()));
+    assert!(matches!(engine.call_dynamic("greet", &[Dyn::Int(1), Dyn::Int(2)]), Err(Error::Api(m)) if m.contains("argument 1 of greet must be s")));
+    assert!(matches!(engine.call_dynamic("nope", &[]), Err(Error::Api(_))));
+    engine.set_dynamic("speed", &Dyn::Int(4)).unwrap();
+    assert_eq!(engine.get_dynamic("speed").unwrap(), Dyn::Float(4.0));
+    assert!(engine.set_dynamic("MAX", &Dyn::Int(1)).is_err());
+    assert_eq!(engine.function_types("scale").unwrap().0.len(), 2);
+}

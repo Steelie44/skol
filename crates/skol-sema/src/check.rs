@@ -160,7 +160,14 @@ pub struct Checker {
     host_modules: HashMap<String, HashMap<String, u32>>,
     host_fns: Vec<HostFnSig>,
     entry: Option<usize>,
+    /// `const` globals whose value is known at compile time; references
+    /// compile to the literal (so `x / CELL` becomes a constant operation).
+    consts: HashMap<ir::GlobalId, ExprKind>,
 }
+
+/// A compile-time constant value.
+#[derive(Debug, Clone)]
+enum ConstVal { I(i64), F(f64), S(String), B(bool) }
 
 impl Default for Checker { fn default() -> Self { Self::new() } }
 
@@ -180,6 +187,7 @@ impl Checker {
             host_modules: HashMap::new(),
             host_fns: Vec::new(),
             entry: None,
+            consts: HashMap::new(),
         }
     }
 
@@ -367,7 +375,13 @@ impl Checker {
                 self.span = item.span;
                 let ty = self.resolve_type(&b.ty)?;
                 if ty == Type::Void { return Err(self.diag(format!("'{}' can't have type void", b.name))); }
-                self.prog.globals[new_globals[gi].0 as usize].ty = ty;
+                let gid = new_globals[gi].0;
+                if !b.mutable {
+                    if let Some(k) = self.fold_const(&b.init).and_then(|v| const_as(v, &ty)) {
+                        self.consts.insert(gid, k);
+                    }
+                }
+                self.prog.globals[gid as usize].ty = ty;
                 gi += 1;
             }
         }
@@ -1123,11 +1137,63 @@ impl Checker {
         })
     }
 
+    /// Evaluate a constant initializer at compile time: literals, other
+    /// known constants, math constants, and arithmetic on them. `None` for
+    /// anything else (or anything that would fail, like dividing by zero).
+    fn fold_const(&mut self, e: &ast::Expr) -> Option<ConstVal> {
+        use ast::ExprKind as A;
+        use ConstVal::*;
+        Some(match &e.kind {
+            A::IntLit(n) => I(*n),
+            A::FloatLit(x) => F(*x),
+            A::StrLit(t) => S(t.clone()),
+            A::BoolLit(b) => B(*b),
+            A::Ident(name) => match self.resolve(name)? {
+                VarRef::Global(g) => match self.consts.get(&g)? {
+                    ExprKind::Int(n) => I(*n),
+                    ExprKind::Float(x) => F(*x),
+                    ExprKind::Str(t) => S(t.to_string()),
+                    ExprKind::Bool(b) => B(*b),
+                    _ => return None,
+                },
+                VarRef::Sym(Symbol::MathConst(c)) => F(c),
+                _ => return None,
+            },
+            A::Unary { op: ast::UnaryOp::Neg, expr } => match self.fold_const(expr)? {
+                I(n) => I(n.checked_neg()?),
+                F(x) => F(-x),
+                _ => return None,
+            },
+            A::Binary { left, op, right } => {
+                let (l, r) = (self.fold_const(left)?, self.fold_const(right)?);
+                use ast::BinaryOp as O;
+                match (l, r) {
+                    (I(a), I(b)) => I(match op {
+                        O::Add => a.checked_add(b)?, O::Sub => a.checked_sub(b)?, O::Mul => a.checked_mul(b)?,
+                        O::Div => a.checked_div(b)?, O::Mod => a.checked_rem_euclid(b)?,
+                        _ => return None,
+                    }),
+                    (S(a), S(b)) if *op == O::Add => S(a + &b),
+                    (a, b) => {
+                        let f = |v: ConstVal| match v { I(n) => Some(n as f64), F(x) => Some(x), _ => None };
+                        let (a, b) = (f(a)?, f(b)?);
+                        F(match op { O::Add => a + b, O::Sub => a - b, O::Mul => a * b, O::Div => a / b, _ => return None })
+                    }
+                }
+            }
+            _ => return None,
+        })
+    }
+
     fn ident(&mut self, name: &str) -> R<Expr> {
         match self.resolve(name) {
             Some(VarRef::Local(l, ty, _)) => Ok(Expr { span: Span::default(), kind: ExprKind::Local(l), ty }),
             Some(VarRef::Upval(u, ty, _)) => Ok(Expr { span: Span::default(), kind: ExprKind::Upval(u), ty }),
-            Some(VarRef::Global(g)) => Ok(Expr { span: Span::default(), kind: ExprKind::Global(g), ty: self.prog.globals[g as usize].ty.clone() }),
+            Some(VarRef::Global(g)) => {
+                let ty = self.prog.globals[g as usize].ty.clone();
+                if let Some(k) = self.consts.get(&g) { return Ok(Expr { span: Span::default(), kind: k.clone(), ty }); }
+                Ok(Expr { span: Span::default(), kind: ExprKind::Global(g), ty })
+            }
             Some(VarRef::Sym(Symbol::Func(f))) => {
                 let func = &self.prog.functions[f as usize];
                 Ok(Expr { span: Span::default(), kind: ExprKind::Closure { func: f, captures: vec![] }, ty: func_type(func.params.clone(), func.ret.clone()) })
@@ -1682,6 +1748,18 @@ impl Checker {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// A folded constant as an IR literal of the declared type.
+fn const_as(v: ConstVal, ty: &Type) -> Option<ExprKind> {
+    Some(match (v, ty) {
+        (ConstVal::I(n), Type::Int) => ExprKind::Int(n),
+        (ConstVal::I(n), Type::Float) => ExprKind::Float(n as f64),
+        (ConstVal::F(x), Type::Float) => ExprKind::Float(x),
+        (ConstVal::S(t), Type::Str) => ExprKind::Str(t.into()),
+        (ConstVal::B(b), Type::Bool) => ExprKind::Bool(b),
+        _ => return None,
+    })
+}
 
 fn func_type(params: Vec<Type>, ret: Type) -> Type { Type::Func { params: params.into(), ret: Rc::new(ret) } }
 
